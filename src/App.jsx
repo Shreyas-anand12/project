@@ -1,4 +1,7 @@
 import React, { useMemo, useRef, useState } from "react";
+import MapView from "./MapView";
+import LocationPicker from "./LocationPicker";
+import "./map.css";
 
 const navItems = [
   { label: "Command center", icon: "grid" },
@@ -7,6 +10,10 @@ const navItems = [
   { label: "Resources", icon: "users" },
   { label: "Reports", icon: "archive" }
 ];
+
+// Placeholder city center — swap for wherever RescueGrid is actually
+// deployed. All incident lat/lng below are jittered around this point.
+const MAP_CENTER = [12.9716, 77.5946];
 
 const initialIncidents = [
   {
@@ -20,8 +27,8 @@ const initialIncidents = [
     status: "Awaiting engine",
     eta: "04:12",
     units: "E-14, T-06",
-    x: 29,
-    y: 34,
+    lat: 12.9762,
+    lng: 77.5993,
     icon: "fire"
   },
   {
@@ -35,8 +42,8 @@ const initialIncidents = [
     status: "Medic en route",
     eta: "02:18",
     units: "M-07",
-    x: 63,
-    y: 26,
+    lat: 12.9850,
+    lng: 77.6050,
     icon: "medical"
   },
   {
@@ -50,8 +57,8 @@ const initialIncidents = [
     status: "Scene secured",
     eta: "07:46",
     units: "P-22, M-03",
-    x: 50,
-    y: 70,
+    lat: 12.9700,
+    lng: 77.6100,
     icon: "car"
   },
   {
@@ -65,8 +72,8 @@ const initialIncidents = [
     status: "Utility notified",
     eta: "11:30",
     units: "H-02",
-    x: 78,
-    y: 68,
+    lat: 12.9650,
+    lng: 77.6150,
     icon: "alert"
   }
 ];
@@ -206,6 +213,16 @@ function severityFromPeopleAffected(count) {
 
 function formatClockTime(date) {
   return date.toLocaleTimeString("en-US", { hour12: false });
+}
+
+// Jitters a point a small random distance from the map center so simulated
+// reports land somewhere plausible on the live map instead of stacking.
+function jitterAroundCenter([lat, lng], spreadKm = 4) {
+  const kmPerDegLat = 111;
+  const kmPerDegLng = 111 * Math.cos((lat * Math.PI) / 180);
+  const dLat = (Math.random() - 0.5) * (spreadKm / kmPerDegLat) * 2;
+  const dLng = (Math.random() - 0.5) * (spreadKm / kmPerDegLng) * 2;
+  return { lat: lat + dLat, lng: lng + dLng };
 }
 
 function Icon({ name, size = 18, stroke = 1.8 }) {
@@ -394,45 +411,25 @@ function Icon({ name, size = 18, stroke = 1.8 }) {
  * pointer. It only rotates while the pointer is over the card, and resets
  * smoothly on leave, so it never fires on page load or scroll.
  */
+// Tilt-on-hover was removed: it fired on any mouse movement inside a panel,
+// including over buttons and the interactive map, which felt broken rather
+// than nice. TiltCard now just renders a plain panel with the same classes
+// (so existing styling/spacing is untouched), with no rotation behavior.
 function TiltCard({ as: Tag = "div", className = "", children, ...rest }) {
-  const ref = useRef(null);
-
-  function handleMove(event) {
-    const el = ref.current;
-    if (!el) return;
-    const bounds = el.getBoundingClientRect();
-    const px = (event.clientX - bounds.left) / bounds.width;
-    const py = (event.clientY - bounds.top) / bounds.height;
-    const rotateY = (px - 0.5) * 8;
-    const rotateX = (0.5 - py) * 8;
-    el.style.setProperty("--tilt-x", `${rotateX.toFixed(2)}deg`);
-    el.style.setProperty("--tilt-y", `${rotateY.toFixed(2)}deg`);
-    el.style.setProperty("--glow-x", `${px * 100}%`);
-    el.style.setProperty("--glow-y", `${py * 100}%`);
-  }
-
-  function handleLeave() {
-    const el = ref.current;
-    if (!el) return;
-    el.style.setProperty("--tilt-x", "0deg");
-    el.style.setProperty("--tilt-y", "0deg");
-  }
-
   return (
-    <Tag
-      ref={ref}
-      className={`tilt-card ${className}`}
-      onMouseMove={handleMove}
-      onMouseLeave={handleLeave}
-      {...rest}
-    >
-      <div className="tilt-card-sheen" />
+    <Tag className={`tilt-card ${className}`} {...rest}>
       {children}
     </Tag>
   );
 }
 
-const emptyReportForm = { description: "", location: "", peopleAffected: "1" };
+const emptyReportForm = {
+  description: "",
+  location: "",
+  peopleAffected: "1",
+  lat: null,
+  lng: null
+};
 
 function App() {
   const [activeNav, setActiveNav] = useState("Command center");
@@ -444,6 +441,8 @@ function App() {
   const [queueSearch, setQueueSearch] = useState("");
   const [acknowledged, setAcknowledged] = useState([]);
   const [notice, setNotice] = useState("");
+  const [showUserLocation, setShowUserLocation] = useState(false);
+  const [locationStatus, setLocationStatus] = useState("idle");
   const [isReportOpen, setIsReportOpen] = useState(false);
   const [reportForm, setReportForm] = useState(emptyReportForm);
   const [reportError, setReportError] = useState("");
@@ -484,6 +483,25 @@ function App() {
     noticeTimer.current = window.setTimeout(() => setNotice(""), 3200);
   }
 
+  function toggleUserLocation() {
+    setShowUserLocation((current) => {
+      const next = !current;
+      flashNotice(
+        next
+          ? "Requesting your location..."
+          : "Stopped sharing your location."
+      );
+      return next;
+    });
+  }
+
+  function handleLocationStatusChange(status, message) {
+    setLocationStatus(status);
+    if (status === "error" && message) {
+      flashNotice(message);
+    }
+  }
+
   function acknowledgeIncident(id) {
     if (!acknowledged.includes(id)) {
       setAcknowledged((current) => [...current, id]);
@@ -503,6 +521,10 @@ function App() {
 
   function updateReportField(field, value) {
     setReportForm((current) => ({ ...current, [field]: value }));
+  }
+
+  function updateReportFields(patch) {
+    setReportForm((current) => ({ ...current, ...patch }));
   }
 
   function submitReport(event) {
@@ -529,19 +551,28 @@ function App() {
     const severity = severityFromPeopleAffected(peopleAffected);
     const now = new Date();
 
+    // Prefer the exact coordinates from live location / search / map click.
+    // Only fall back to a random jitter if the reporter typed a location
+    // but never actually picked a point, so the pin stays honest instead of
+    // silently landing somewhere unrelated to the text.
+    const hasPreciseLocation = reportForm.lat != null && reportForm.lng != null;
+    const { lat, lng } = hasPreciseLocation
+      ? { lat: reportForm.lat, lng: reportForm.lng }
+      : jitterAroundCenter(MAP_CENTER);
+
     const newIncident = {
       id,
       type,
       category,
       location,
       detail: description,
-      distance: "New report",
+      distance: hasPreciseLocation ? "Pinpointed" : "Approx. location",
       severity,
       status: "Pending dispatch",
       eta: "--:--",
       units: "Unassigned",
-      x: 15 + Math.round(Math.random() * 68),
-      y: 20 + Math.round(Math.random() * 60),
+      lat,
+      lng,
       icon
     };
 
@@ -824,58 +855,30 @@ function App() {
                   >
                     Playback
                   </button>
+                  <button
+                    className={`map-control ${showUserLocation ? "active" : ""}`}
+                    onClick={toggleUserLocation}
+                  >
+                    My location
+                  </button>
+                  {showUserLocation && locationStatus === "locating" && (
+                    <span className="location-status-note">Locating…</span>
+                  )}
+                  {showUserLocation && locationStatus === "error" && (
+                    <span className="location-status-note is-error">Location failed</span>
+                  )}
                 </div>
               </div>
 
               <div className="map-surface">
-                <svg
-                  className="map-lines"
-                  viewBox="0 0 100 100"
-                  preserveAspectRatio="none"
-                  aria-hidden="true"
-                >
-                  <path d="M-5 17 C22 23 20 5 50 17S76 35 105 23" />
-                  <path d="M-10 52 C22 44 39 67 62 52S79 36 110 48" />
-                  <path d="M-10 83 C15 67 34 89 58 78S85 75 110 87" />
-                  <path d="M18 -5 C28 20 20 36 35 55S39 85 28 105" />
-                  <path d="M67 -5 C57 16 76 29 63 48S69 79 62 105" />
-                  <path d="M91 -5 C76 18 96 34 82 53S93 82 82 105" />
-                </svg>
-
-                <div className="district-label district-a">Northpoint</div>
-                <div className="district-label district-b">Westhaven</div>
-                <div className="district-label district-c">Cedar District</div>
-                <div className="district-label district-d">Edison Row</div>
-
-                {incidents.map((incident) => {
-                  const isSelected = incident.id === selectedIncident;
-                  const isAcknowledged = acknowledged.includes(incident.id);
-
-                  return (
-                    <button
-                      key={incident.id}
-                      className={`map-marker ${incident.severity} ${
-                        isSelected ? "is-selected" : ""
-                      } ${isAcknowledged ? "is-acknowledged" : ""}`}
-                      style={{
-                        left: `${incident.x}%`,
-                        top: `${incident.y}%`
-                      }}
-                      onClick={() => setSelectedIncident(incident.id)}
-                      aria-label={`Select ${incident.type} at ${incident.location}`}
-                    >
-                      <span className="marker-ring">
-                        <Icon name={incident.icon} size={16} />
-                      </span>
-                      <span className="marker-label">{incident.id}</span>
-                    </button>
-                  );
-                })}
-
-                <div className="map-location">
-                  <span className="location-dot" />
-                  <span>Your command center</span>
-                </div>
+                <MapView
+                  incidents={incidents}
+                  selectedIncident={selectedIncident}
+                  onSelectIncident={setSelectedIncident}
+                  center={MAP_CENTER}
+                  showUserLocation={showUserLocation}
+                  onLocationStatusChange={handleLocationStatusChange}
+                />
 
                 <div className="map-legend">
                   <span>
@@ -890,21 +893,6 @@ function App() {
                     <i className="legend-dot watch" />
                     Monitoring
                   </span>
-                </div>
-
-                <div className="map-zoom">
-                  <button
-                    onClick={() => flashNotice("Map zoomed in.")}
-                    aria-label="Zoom in"
-                  >
-                    <Icon name="plus" size={17} />
-                  </button>
-                  <button
-                    onClick={() => flashNotice("Map centered on command center.")}
-                    aria-label="Center map"
-                  >
-                    <Icon name="map" size={15} />
-                  </button>
                 </div>
               </div>
 
@@ -1116,7 +1104,7 @@ function App() {
 
                 {visibleQueue.length === 0 && (
                   <div className="empty-state">
-                    No dispatches match “{queueSearch}”.
+                    No dispatches match "{queueSearch}".
                   </div>
                 )}
               </div>
@@ -1261,13 +1249,12 @@ function App() {
 
                 <label className="modal-field">
                   <span>Location</span>
-                  <input
-                    type="text"
-                    placeholder="Westhaven Market"
+                  <LocationPicker
                     value={reportForm.location}
-                    onChange={(event) =>
-                      updateReportField("location", event.target.value)
-                    }
+                    lat={reportForm.lat}
+                    lng={reportForm.lng}
+                    mapCenter={MAP_CENTER}
+                    onChange={updateReportFields}
                   />
                 </label>
 
