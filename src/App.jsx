@@ -1,14 +1,16 @@
 import React, { useMemo, useRef, useState } from "react";
 import MapView from "./MapView";
 import LocationPicker from "./LocationPicker";
+import LanguageSelector from "./LanguageSelector";
+import { LanguageProvider, useLanguage } from "./i18n/LanguageContext";
 import "./map.css";
 
 const navItems = [
-  { label: "Command center", icon: "grid" },
-  { label: "Live map", icon: "map" },
-  { label: "Dispatch queue", icon: "radio" },
-  { label: "Resources", icon: "users" },
-  { label: "Reports", icon: "archive" }
+  { key: "navCommandCenter", icon: "grid" },
+  { key: "navLiveMap", icon: "map" },
+  { key: "navDispatchQueue", icon: "radio" },
+  { key: "navResources", icon: "users" },
+  { key: "navReports", icon: "archive" }
 ];
 
 // Placeholder city center — swap for wherever RescueGrid is actually
@@ -428,11 +430,15 @@ const emptyReportForm = {
   location: "",
   peopleAffected: "1",
   lat: null,
-  lng: null
+  lng: null,
+  photo: null,
+  photoName: null
 };
 
-function App() {
-  const [activeNav, setActiveNav] = useState("Command center");
+function Dashboard() {
+  const { language, hasChosenLanguage, setLanguage, t, languages } = useLanguage();
+  const [isLanguageModalOpen, setIsLanguageModalOpen] = useState(!hasChosenLanguage);
+  const [activeNav, setActiveNav] = useState("navCommandCenter");
   const [incidents, setIncidents] = useState(initialIncidents);
   const [dispatchQueue, setDispatchQueue] = useState(initialDispatchQueue);
   const [activity, setActivity] = useState(initialActivity);
@@ -527,6 +533,29 @@ function App() {
     setReportForm((current) => ({ ...current, ...patch }));
   }
 
+  function handlePhotoChange(event) {
+    const file = event.target.files && event.target.files[0];
+    if (!file) return;
+
+    if (!file.type.startsWith("image/")) {
+      setReportError("Please choose an image file.");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      updateReportFields({ photo: reader.result, photoName: file.name });
+    };
+    reader.readAsDataURL(file);
+
+    // Allow re-selecting the same file later after removing it.
+    event.target.value = "";
+  }
+
+  function removePhoto() {
+    updateReportFields({ photo: null, photoName: null });
+  }
+
   function submitReport(event) {
     event.preventDefault();
 
@@ -537,8 +566,18 @@ function App() {
       parseInt(reportForm.peopleAffected, 10) || 0
     );
 
-    if (!description || !location) {
-      setReportError("Add a description and a location so units know where to go.");
+    if (!description) {
+      setReportError("Add a description so units know what's happening.");
+      return;
+    }
+
+    if (reportForm.lat == null || reportForm.lng == null) {
+      setReportError("Set a location using your live position or by tapping the map — it can't be typed in.");
+      return;
+    }
+
+    if (!reportForm.photo) {
+      setReportError("Attach a photo of the emergency to submit the report.");
       return;
     }
 
@@ -573,7 +612,9 @@ function App() {
       units: "Unassigned",
       lat,
       lng,
-      icon
+      icon,
+      photoUrl: reportForm.photo || null,
+      photoName: reportForm.photoName || null
     };
 
     const newDispatchItem = {
@@ -625,17 +666,17 @@ function App() {
           {navItems.map((item) => (
             <button
               className={`nav-item ${
-                activeNav === item.label ? "is-active" : ""
+                activeNav === item.key ? "is-active" : ""
               }`}
-              key={item.label}
+              key={item.key}
               onClick={() => {
-                setActiveNav(item.label);
-                flashNotice(`You're viewing ${item.label.toLowerCase()}.`);
+                setActiveNav(item.key);
+                flashNotice(`You're viewing ${t(item.key).toLowerCase()}.`);
               }}
             >
               <Icon name={item.icon} size={18} />
-              <span>{item.label}</span>
-              {item.label === "Dispatch queue" && (
+              <span>{t(item.key)}</span>
+              {item.key === "navDispatchQueue" && (
                 <span className="nav-count">{dispatchQueue.length}</span>
               )}
             </button>
@@ -682,7 +723,7 @@ function App() {
           <div className="breadcrumb">
             <span>RescueGrid</span>
             <Icon name="chevron" size={14} />
-            <strong>{activeNav}</strong>
+            <strong>{t(activeNav)}</strong>
           </div>
 
           <div className="topbar-actions">
@@ -706,6 +747,14 @@ function App() {
               <span className="notification-dot" />
             </button>
 
+            <button
+              className="date-pill language-pill"
+              onClick={() => setIsLanguageModalOpen(true)}
+            >
+              <Icon name="map" size={16} />
+              <span>{languages.find((l) => l.code === language)?.nativeName || "English"}</span>
+            </button>
+
             <div className="date-pill">
               <Icon name="clock" size={16} />
               <span>Sun, Sep 13</span>
@@ -718,17 +767,14 @@ function App() {
             <div className="hero-copy">
               <div className="eyebrow">
                 <span className="live-pulse" />
-                Everything's running smoothly
+                {t("heroEyebrow")}
               </div>
               <h1>
-                Operations control,
+                {t("heroTitleLine1")}
                 <br />
-                <em>without the noise.</em>
+                <em>{t("heroTitleEm")}</em>
               </h1>
-              <p>
-                Every call, crew and critical asset in one calm operational
-                view.
-              </p>
+              <p>{t("heroDesc")}</p>
             </div>
 
             <div className="hero-actions">
@@ -745,12 +791,12 @@ function App() {
                   flashNotice("Broadcast channel opened for dispatch.")
                 }
               >
-                Broadcast update
+                {t("broadcastUpdate")}
                 <Icon name="arrow-right" size={16} />
               </button>
               <button className="simulate-button" onClick={openReportModal}>
                 <Icon name="plus" size={16} />
-                Simulate emergency
+                {t("simulateEmergency")}
               </button>
             </div>
           </section>
@@ -758,7 +804,7 @@ function App() {
           <section className="metric-grid" aria-label="Operational metrics">
             <TiltCard as="article" className="metric-card">
               <div className="metric-topline">
-                <span className="metric-label">Operational units</span>
+                <span className="metric-label">{t("metricOperationalUnits")}</span>
                 <span className="metric-icon green">
                   <Icon name="shield" size={17} />
                 </span>
@@ -775,7 +821,7 @@ function App() {
 
             <TiltCard as="article" className="metric-card">
               <div className="metric-topline">
-                <span className="metric-label">Response time</span>
+                <span className="metric-label">{t("metricResponseTime")}</span>
                 <span className="metric-icon blue">
                   <Icon name="clock" size={17} />
                 </span>
@@ -792,7 +838,7 @@ function App() {
 
             <TiltCard as="article" className="metric-card">
               <div className="metric-topline">
-                <span className="metric-label">Open incidents</span>
+                <span className="metric-label">{t("metricOpenIncidents")}</span>
                 <span className="metric-icon orange">
                   <Icon name="alert" size={17} />
                 </span>
@@ -806,7 +852,7 @@ function App() {
 
             <TiltCard as="article" className="metric-card">
               <div className="metric-topline">
-                <span className="metric-label">City coverage</span>
+                <span className="metric-label">{t("metricCityCoverage")}</span>
                 <span className="metric-icon violet">
                   <Icon name="map" size={17} />
                 </span>
@@ -825,13 +871,13 @@ function App() {
           <section className="section-heading">
             <div>
               <span className="section-kicker">Situational awareness</span>
-              <h2>Live operational picture</h2>
+              <h2>{t("sectionLivePicture")}</h2>
             </div>
             <button
               className="text-button"
               onClick={() => flashNotice("Full map view selected.")}
             >
-              Open full map
+              {t("openFullMap")}
               <Icon name="arrow-right" size={15} />
             </button>
           </section>
@@ -848,18 +894,18 @@ function App() {
                 </div>
 
                 <div className="map-controls">
-                  <button className="map-control active">Live</button>
+                  <button className="map-control active">{t("mapLive")}</button>
                   <button
                     className="map-control"
                     onClick={() => flashNotice("Historical playback selected.")}
                   >
-                    Playback
+                    {t("mapPlayback")}
                   </button>
                   <button
                     className={`map-control ${showUserLocation ? "active" : ""}`}
                     onClick={toggleUserLocation}
                   >
-                    My location
+                    {t("mapMyLocation")}
                   </button>
                   {showUserLocation && locationStatus === "locating" && (
                     <span className="location-status-note">Locating…</span>
@@ -883,15 +929,15 @@ function App() {
                 <div className="map-legend">
                   <span>
                     <i className="legend-dot critical" />
-                    Critical
+                    {t("legendCritical")}
                   </span>
                   <span>
                     <i className="legend-dot urgent" />
-                    Active
+                    {t("legendActive")}
                   </span>
                   <span>
                     <i className="legend-dot watch" />
-                    Monitoring
+                    {t("legendMonitoring")}
                   </span>
                 </div>
               </div>
@@ -915,8 +961,8 @@ function App() {
             <TiltCard as="article" className="incident-card panel-card">
               <div className="panel-heading">
                 <div>
-                  <span className="panel-overline">Priority queue</span>
-                  <h3>Active incidents</h3>
+                  <span className="panel-overline">{t("priorityQueue")}</span>
+                  <h3>{t("activeIncidents")}</h3>
                 </div>
                 <span className="count-badge">{visibleIncidents.length}</span>
               </div>
@@ -989,6 +1035,12 @@ function App() {
 
                 <p>{activeIncident.detail}</p>
 
+                {activeIncident.photoUrl && (
+                  <div className="incident-photo">
+                    <img src={activeIncident.photoUrl} alt={`Photo evidence for ${activeIncident.id}`} />
+                  </div>
+                )}
+
                 <div className="detail-location">
                   <span className="location-marker">
                     <Icon name="map" size={15} />
@@ -1004,7 +1056,7 @@ function App() {
                       flashNotice(`Dispatch channel opened for ${activeIncident.id}.`)
                     }
                   >
-                    View dispatch
+                    {t("viewDispatch")}
                     <Icon name="arrow-right" size={15} />
                   </button>
                   <button
@@ -1021,8 +1073,8 @@ function App() {
                       size={15}
                     />
                     {acknowledged.includes(activeIncident.id)
-                      ? "Acknowledged"
-                      : "Acknowledge"}
+                      ? t("acknowledged")
+                      : t("acknowledge")}
                   </button>
                 </div>
               </div>
@@ -1032,7 +1084,7 @@ function App() {
               <div className="panel-heading">
                 <div>
                   <span className="panel-overline">Current shift</span>
-                  <h3>Dispatch queue</h3>
+                  <h3>{t("dispatchQueueTitle")}</h3>
                 </div>
                 <button
                   className="icon-button subtle"
@@ -1128,7 +1180,7 @@ function App() {
               <div className="panel-heading">
                 <div>
                   <span className="panel-overline">Availability</span>
-                  <h3>Resource readiness</h3>
+                  <h3>{t("resourceReadiness")}</h3>
                 </div>
                 <button
                   className="text-button compact"
@@ -1162,7 +1214,7 @@ function App() {
               <div className="panel-heading">
                 <div>
                   <span className="panel-overline">System stream</span>
-                  <h3>Recent activity</h3>
+                  <h3>{t("recentActivity")}</h3>
                 </div>
                 <span className="stream-live">
                   <span className="live-pulse small" />
@@ -1210,6 +1262,19 @@ function App() {
           </div>
         )}
 
+        {isLanguageModalOpen && (
+          <LanguageSelector
+            languages={languages}
+            currentLanguage={language}
+            allowClose={hasChosenLanguage}
+            onClose={() => setIsLanguageModalOpen(false)}
+            onSelect={(code) => {
+              setLanguage(code);
+              setIsLanguageModalOpen(false);
+            }}
+          />
+        )}
+
         {isReportOpen && (
           <div
             className="modal-overlay"
@@ -1224,7 +1289,7 @@ function App() {
               onClick={(event) => event.stopPropagation()}
             >
               <div className="modal-heading">
-                <h3 id="report-modal-title">Report emergency</h3>
+                <h3 id="report-modal-title">{t("reportModalTitle")}</h3>
                 <button
                   className="modal-close"
                   aria-label="Close"
@@ -1236,7 +1301,7 @@ function App() {
 
               <form className="modal-form" onSubmit={submitReport}>
                 <label className="modal-field">
-                  <span>Description</span>
+                  <span>{t("fieldDescription")}</span>
                   <textarea
                     rows={3}
                     placeholder="Smoke coming from 4th floor..."
@@ -1248,7 +1313,7 @@ function App() {
                 </label>
 
                 <label className="modal-field">
-                  <span>Location</span>
+                  <span>{t("fieldLocation")} *</span>
                   <LocationPicker
                     value={reportForm.location}
                     lat={reportForm.lat}
@@ -1256,10 +1321,40 @@ function App() {
                     mapCenter={MAP_CENTER}
                     onChange={updateReportFields}
                   />
+                  <small className="field-note">
+                    Location can't be typed — it's set from your live position or by tapping the map, to keep reports verifiable.
+                  </small>
                 </label>
 
+                <div className="modal-field">
+                  <span>{t("fieldPhoto")} *</span>
+                  {reportForm.photo ? (
+                    <div className="photo-preview">
+                      <img src={reportForm.photo} alt="Disaster evidence preview" />
+                      <div className="photo-preview-meta">
+                        <span>{reportForm.photoName}</span>
+                        <button type="button" className="photo-remove" onClick={removePhoto}>
+                          {t("removePhoto")}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <label className="photo-upload-button">
+                      <Icon name="plus" size={16} />
+                      {t("addPhoto")}
+                      <input
+                        type="file"
+                        accept="image/*"
+                        capture="environment"
+                        onChange={handlePhotoChange}
+                        hidden
+                      />
+                    </label>
+                  )}
+                </div>
+
                 <label className="modal-field">
-                  <span>People affected</span>
+                  <span>{t("fieldPeopleAffected")}</span>
                   <input
                     type="number"
                     min="0"
@@ -1281,10 +1376,10 @@ function App() {
                     className="secondary-button"
                     onClick={closeReportModal}
                   >
-                    Cancel
+                    {t("cancel")}
                   </button>
                   <button type="submit" className="primary-button">
-                    Submit report
+                    {t("submitReport")}
                     <Icon name="arrow-right" size={15} />
                   </button>
                 </div>
@@ -1297,4 +1392,10 @@ function App() {
   );
 }
 
-export default App;
+export default function App() {
+  return (
+    <LanguageProvider>
+      <Dashboard />
+    </LanguageProvider>
+  );
+}

@@ -129,6 +129,22 @@
   min-width: 0;
 }
 
+.location-display {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  background: #f1f5f9;
+  font-size: 13px;
+  color: #334155;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+}
+
 .use-location-button {
   white-space: nowrap;
   padding: 0 12px;
@@ -227,4 +243,298 @@
   transform: rotate(-45deg);
   border: 2px solid #fff;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+
+/* --- Language switcher + modal --- */
+
+.language-pill {
+  cursor: pointer;
+  border: none;
+}
+
+.language-modal {
+  max-width: 560px;
+  width: 100%;
+}
+
+.language-modal-subtitle {
+  margin: -4px 0 16px;
+  font-size: 13px;
+  color: #64748b;
+}
+
+.language-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+  max-height: 360px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.language-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  cursor: pointer;
+  text-align: left;
+}
+
+.language-option:hover {
+  border-color: #94a3b8;
+}
+
+.language-option.is-selected {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+.language-native {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.language-english {
+  font-size: 11px;
+  color: #64748b;
+}
+
+/* --- Report modal: photo upload --- */
+
+.photo-upload-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px dashed #94a3b8;
+  background: #f8fafc;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.photo-upload-button:hover {
+  border-color: #64748b;
+}
+
+.photo-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 8px;
+  background: #f8fafc;
+}
+
+.photo-preview img {
+  width: 100%;
+  max-height: 160px;
+  object-fit: cover;
+  border-radius: 8px;
+}
+
+.photo-preview-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.photo-preview-meta span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.photo-remove {
+  flex-shrink: 0;
+  border: none;
+  background: none;
+  color: #ef4444;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+}
+
+/* --- Incident detail panel photo --- */
+
+.incident-photo {
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid #e2e8f0;
+  margin: 4px 0;
+}
+
+.incident-photo img {
+  width: 100%;
+  max-height: 200px;
+  object-fit: cover;
+  display: block;
+}
+
+.field-note {
+  font-size: 11px;
+  color: #64748b;
+  margin-top: 2px;
+}
+
+/* --- Report modal: bigger, no overflow, easier to use fast --- */
+
+.modal-overlay {
+  position: fixed !important;
+  inset: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  background: rgba(15, 23, 42, 0.55);
+  padding: 16px;
+  z-index: 1000;
+  overflow-y: auto;
+}
+
+.modal-overlay,
+.modal-overlay * {
+  box-sizing: border-box !important;
+}
+
+.modal-card {
+  width: min(640px, 95vw) !important;
+  max-width: 95vw !important;
+  max-height: 90vh !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  padding: 28px !important;
+  border-radius: 18px;
+}
+
+.modal-card * {
+  max-width: 100% !important;
+  overflow-wrap: break-word !important;
+  word-break: break-word !important;
+}
+
+/* Leaflet's tiles/panes rely on exact pixel sizing to line up correctly —
+   exclude them from the blanket text-wrapping rule above or the map
+   renders with gaps/misaligned tiles. */
+.modal-card .leaflet-container,
+.modal-card .leaflet-container * {
+  max-width: none !important;
+  overflow-wrap: normal !important;
+  word-break: normal !important;
+}
+
+.modal-heading h3 {
+  font-size: 22px;
+}
+
+.modal-form {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 18px;
+  width: 100%;
+}
+
+.modal-field {
+  width: 100%;
+}
+
+.modal-field span {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 4px;
+  display: block;
+}
+
+.modal-field input,
+.modal-field textarea {
+  width: 100% !important;
+  font-size: 16px;
+  padding: 12px 14px;
+  border-radius: 10px;
+}
+
+.location-picker {
+  width: 100%;
+}
+
+.location-picker-input-row {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  width: 100%;
+  gap: 8px;
+}
+
+.location-display {
+  flex: 1 1 200px !important;
+  min-width: 0 !important;
+  font-size: 14px;
+  padding: 12px 14px;
+  min-height: 44px;
+  white-space: normal !important;
+  overflow: visible !important;
+  text-overflow: unset !important;
+  line-height: 1.4;
+}
+
+.use-location-button {
+  flex: 0 0 auto;
+  font-size: 14px;
+  padding: 0 16px;
+  min-height: 44px;
+}
+
+.location-picker-map {
+  width: 100%;
+}
+
+.location-picker-map-container {
+  width: 100% !important;
+  height: 220px !important;
+}
+
+.photo-upload-button {
+  font-size: 15px;
+  padding: 14px 18px;
+  width: 100% !important;
+  justify-content: center;
+}
+
+.photo-preview {
+  width: 100%;
+}
+
+.photo-preview-meta {
+  flex-wrap: wrap !important;
+}
+
+.modal-actions {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 12px;
+  margin-top: 4px;
+  width: 100%;
+}
+
+.modal-actions button {
+  flex: 1 1 140px;
+  font-size: 16px;
+  padding: 14px 18px;
+  border-radius: 12px;
+}
+
+@media (max-width: 480px) {
+  .modal-card {
+    width: 100% !important;
+    max-height: 95vh !important;
+    padding: 20px !important;
+  }
 }

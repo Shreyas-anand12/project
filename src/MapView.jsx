@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { MapContainer, TileLayer, Marker, Popup, Circle, useMap } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
@@ -55,6 +55,30 @@ function FlyToSelected({ incident }) {
       duration: 0.6
     });
   }, [incident, map]);
+
+  return null;
+}
+
+// Flies/zooms the map to the viewer's live position the moment "My
+// location" is turned on and a fix comes in, so the map actually broadens
+// into their location instead of leaving it off-screen. Resets so it flies
+// again next time location tracking is re-enabled.
+function FlyToUser({ position, active }) {
+  const map = useMap();
+  const hasFlown = useRef(false);
+
+  useEffect(() => {
+    if (!active) {
+      hasFlown.current = false;
+      return;
+    }
+    if (position && !hasFlown.current) {
+      hasFlown.current = true;
+      map.flyTo([position.lat, position.lng], Math.max(map.getZoom(), 15), {
+        duration: 0.8
+      });
+    }
+  }, [active, position, map]);
 
   return null;
 }
@@ -156,6 +180,16 @@ export default function MapView({
             <br />
             <span style={{ textTransform: "capitalize" }}>{incident.severity}</span>{" "}
             · {incident.status}
+            {incident.photoUrl && (
+              <>
+                <br />
+                <img
+                  src={incident.photoUrl}
+                  alt={`Photo evidence for ${incident.id}`}
+                  style={{ marginTop: 6, width: "100%", maxWidth: 160, borderRadius: 6 }}
+                />
+              </>
+            )}
           </Popup>
         </Marker>
       ))}
@@ -178,6 +212,7 @@ export default function MapView({
       )}
 
       <FlyToSelected incident={active} />
+      <FlyToUser position={userPosition} active={showUserLocation} />
     </MapContainer>
   );
 }
