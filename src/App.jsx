@@ -187,7 +187,7 @@ const initialActivity = [
 
 // ─── Gemini AI prank-detection ──────────────────────────────────────────────
 // Leave GEMINI_API_KEY as an empty string — paste your key here before running.
-const GEMINI_API_KEY = "AIzaSyC1PS2yWPZEwT0U7PQ5gJ4BJvhncBGjsrc";
+const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 
 async function analyzeReportWithGemini({ description, location, peopleAffected, photoBase64 }) {
   if (!GEMINI_API_KEY) {
