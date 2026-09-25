@@ -185,6 +185,74 @@ const initialActivity = [
   }
 ];
 
+// ─── Gemini AI prank-detection ──────────────────────────────────────────────
+// Leave GEMINI_API_KEY as an empty string — paste your key here before running.
+const GEMINI_API_KEY = "AIzaSyC1PS2yWPZEwT0U7PQ5gJ4BJvhncBGjsrc";
+
+async function analyzeReportWithGemini({ description, location, peopleAffected, photoBase64 }) {
+  if (!GEMINI_API_KEY) {
+    // No key configured — skip AI check and treat every report as real.
+    return { verdict: "real", confidence: null, reason: "AI check skipped (no API key configured)." };
+  }
+
+  const parts = [];
+
+  if (photoBase64) {
+    // Strip the data-URL prefix so Gemini gets raw base64.
+    const base64Data = photoBase64.split(",")[1] || photoBase64;
+    parts.push({
+      inline_data: { mime_type: "image/jpeg", data: base64Data }
+    });
+  }
+
+  parts.push({
+    text: `You are a 911 dispatch AI assistant. Analyze this emergency report and determine whether it is a REAL emergency or a PRANK/false alarm.
+
+Description: "${description}"
+Location: "${location}"
+People affected: ${peopleAffected}
+${photoBase64 ? "A photo was attached (shown above)." : "No photo attached."}
+
+Respond ONLY with a JSON object in this exact format (no markdown, no extra text):
+{
+  "verdict": "real" or "prank",
+  "confidence": 0-100,
+  "reason": "one sentence explanation"
+}
+
+Indicators of a prank: vague description, no clear location, suspiciously round numbers, joke-like language, photo doesn't match description, or description uses humor/slang.
+Indicators of a real emergency: specific location details, coherent description of hazard or injury, distressed tone, consistent photo evidence.`
+  });
+
+  try {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contents: [{ parts }] })
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Gemini API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    const parsed = JSON.parse(text.trim());
+    return {
+      verdict: parsed.verdict === "prank" ? "prank" : "real",
+      confidence: parsed.confidence ?? null,
+      reason: parsed.reason ?? ""
+    };
+  } catch (err) {
+    console.warn("Gemini analysis failed:", err);
+    return { verdict: "real", confidence: null, reason: "AI check failed — treating as real." };
+  }
+}
+// ────────────────────────────────────────────────────────────────────────────
+
 // Looks at the free-text description someone types into the simulator and
 // guesses a reasonable category/icon for it, so submitted reports slot into
 // the same visual language as the seeded incidents.
@@ -435,6 +503,72 @@ const emptyReportForm = {
   photoName: null
 };
 
+const DISPATCH_STATUSES = [
+  "Reported", "Dispatching", "En route", "On scene",
+  "Monitoring", "Acknowledged", "Resolved", "Flagged"
+];
+
+const STATUS_COLORS = {
+  "Reported":     { bg: "#e8f5f2", color: "#0a7c62" },
+  "Dispatching":  { bg: "#fff4e0", color: "#b56a00" },
+  "En route":     { bg: "#e8f0ff", color: "#3a5fd9" },
+  "On scene":     { bg: "#f3e8ff", color: "#7c3aed" },
+  "Monitoring":   { bg: "#f0f4f8", color: "#475569" },
+  "Acknowledged": { bg: "#e8f5f2", color: "#0a7c62" },
+  "Resolved":     { bg: "#f0fdf4", color: "#15803d" },
+  "Flagged":      { bg: "#fff0f0", color: "#c0392b" },
+};
+
+function StatusDropdown({ value, onChange }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  React.useEffect(() => {
+    function handle(e) {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    }
+    document.addEventListener("mousedown", handle);
+    return () => document.removeEventListener("mousedown", handle);
+  }, []);
+
+  const colors = STATUS_COLORS[value] || { bg: "#f0f4f8", color: "#475569" };
+
+  return (
+    <div ref={ref} className="custom-status-wrap">
+      <button
+        className="custom-status-btn"
+        style={{ background: colors.bg, color: colors.color, borderColor: colors.color + "40" }}
+        onClick={() => setOpen(o => !o)}
+        type="button"
+      >
+        {value}
+        <svg width="10" height="6" viewBox="0 0 10 6" fill="none" style={{ marginLeft: 5, opacity: 0.6 }}>
+          <path d="M1 1l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+        </svg>
+      </button>
+
+      {open && (
+        <div className="custom-status-menu">
+          {DISPATCH_STATUSES.map(s => {
+            const c = STATUS_COLORS[s] || { bg: "#f0f4f8", color: "#475569" };
+            return (
+              <button
+                key={s}
+                className={`custom-status-option ${s === value ? "is-selected" : ""}`}
+                type="button"
+                onClick={() => { onChange(s); setOpen(false); }}
+              >
+                <span className="custom-status-dot" style={{ background: c.color }} />
+                {s}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Dashboard() {
   const { language, hasChosenLanguage, setLanguage, t, languages } = useLanguage();
   const [isLanguageModalOpen, setIsLanguageModalOpen] = useState(!hasChosenLanguage);
@@ -446,12 +580,38 @@ function Dashboard() {
   const [incidentFilter, setIncidentFilter] = useState("All");
   const [queueSearch, setQueueSearch] = useState("");
   const [acknowledged, setAcknowledged] = useState([]);
+  const [submittedCount, setSubmittedCount] = useState(0); // starts at 0, increments on each new report
   const [notice, setNotice] = useState("");
   const [showUserLocation, setShowUserLocation] = useState(false);
   const [locationStatus, setLocationStatus] = useState("idle");
   const [isReportOpen, setIsReportOpen] = useState(false);
   const [reportForm, setReportForm] = useState(emptyReportForm);
   const [reportError, setReportError] = useState("");
+  const [aiAnalysis, setAiAnalysis] = useState(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  // Panels / modals
+  const [isNotifOpen, setIsNotifOpen]       = useState(false);
+  const [isBroadcastOpen, setIsBroadcastOpen] = useState(false);
+  const [isOperatorOpen, setIsOperatorOpen]  = useState(false);
+  const [broadcastMsg, setBroadcastMsg]      = useState("");
+  const [notifications, setNotifications]    = useState([
+    { id: 1, read: false, icon: "fire",    title: "Engine 14 dispatched",   detail: "Westhaven Market · Structure fire",          time: "10:42" },
+    { id: 2, read: false, icon: "medical", title: "Medic 07 en route",      detail: "Northpoint Apartments · Cardiac response",   time: "10:41" },
+    { id: 3, read: false, icon: "alert",   title: "Gas odor escalation",    detail: "Edison Row · Utility team notified",          time: "10:38" },
+    { id: 4, read: true,  icon: "cloud",   title: "Weather advisory",       detail: "Visibility reduced in east sector",           time: "10:36" },
+    { id: 5, read: true,  icon: "car",     title: "Patrol 22 on scene",     detail: "Cedar & 8th Avenue · Vehicle collision",     time: "10:34" },
+  ]);
+  // Profile / settings state
+  const [profile, setProfile] = useState({
+    name: "Alex Monroe",
+    role: "Shift commander",
+    email: "a.monroe@rescuegrid.ops",
+    phone: "+1 555-0192",
+    badge: "RG-4421",
+    station: "Station 14 — Downtown",
+    notifications: { email: true, sms: true, push: false },
+    theme: "dark"
+  });
   const noticeTimer = useRef(null);
   const nextReportNumber = useRef(1052);
 
@@ -508,16 +668,138 @@ function Dashboard() {
     }
   }
 
-  function acknowledgeIncident(id) {
-    if (!acknowledged.includes(id)) {
-      setAcknowledged((current) => [...current, id]);
-      flashNotice(`Nice work — ${id} is acknowledged and logged.`);
+  // Live clock
+  const [clock, setClock] = useState(formatClockTime(new Date()));
+  React.useEffect(() => {
+    const timer = setInterval(() => setClock(formatClockTime(new Date())), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Apply theme to <html> so CSS vars switch globally
+  React.useEffect(() => {
+    document.documentElement.setAttribute("data-theme", profile.theme === "system"
+      ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+      : profile.theme
+    );
+  }, [profile.theme]);
+
+  // Close any open panel when clicking outside
+  React.useEffect(() => {
+    function handleClick(e) {
+      if (!e.target.closest(".popup-panel") && !e.target.closest(".panel-trigger")) {
+        setIsNotifOpen(false);
+        setIsOperatorOpen(false);
+      }
     }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
+
+  function markAllRead() {
+    setNotifications(n => n.map(x => ({ ...x, read: true })));
+  }
+
+  function sendBroadcast() {
+    if (!broadcastMsg.trim()) return;
+    const now = new Date();
+    setActivity(current => [{
+      time: formatClockTime(now),
+      title: `📢 Broadcast: ${broadcastMsg.slice(0, 40)}${broadcastMsg.length > 40 ? "…" : ""}`,
+      detail: "Sent to all active units",
+      icon: "pulse",
+      tone: "blue"
+    }, ...current]);
+    flashNotice("Broadcast sent to all units.");
+    setBroadcastMsg("");
+    setIsBroadcastOpen(false);
+  }
+
+  function acknowledgeIncident(id) {
+    if (acknowledged.includes(id)) return;
+
+    setAcknowledged((current) => [...current, id]);
+
+    // Update the incident status live
+    setIncidents((current) =>
+      current.map((inc) =>
+        inc.id === id ? { ...inc, status: "Acknowledged" } : inc
+      )
+    );
+
+    // Find the matching dispatch and mark it acknowledged too
+    setDispatchQueue((current) =>
+      current.map((item) => {
+        // match by incident id embedded in dispatch id (D-XXXX vs RG-XXXX share the same number)
+        const incNum = id.replace("RG-", "");
+        const dispNum = item.id.replace("D-", "");
+        if (dispNum === incNum || item.call === incidents.find(i => i.id === id)?.type) {
+          return { ...item, status: "Acknowledged" };
+        }
+        return item;
+      })
+    );
+
+    // Push to activity log
+    const now = new Date();
+    setActivity((current) => [
+      {
+        time: formatClockTime(now),
+        title: `${id} acknowledged`,
+        detail: incidents.find((i) => i.id === id)?.location || "",
+        icon: "check",
+        tone: "green"
+      },
+      ...current
+    ]);
+
+    flashNotice(`${id} acknowledged and logged.`);
+  }
+
+  function updateDispatchStatus(dispatchId, newStatus) {
+    setDispatchQueue((current) =>
+      current.map((item) =>
+        item.id === dispatchId ? { ...item, status: newStatus } : item
+      )
+    );
+    // Mirror to incidents
+    setIncidents((current) =>
+      current.map((inc) => {
+        const incNum = inc.id.replace("RG-", "");
+        const dispNum = dispatchId.replace("D-", "");
+        if (incNum === dispNum) {
+          return { ...inc, status: newStatus };
+        }
+        return inc;
+      })
+    );
+    const now = new Date();
+    setActivity((current) => [
+      {
+        time: formatClockTime(now),
+        title: `${dispatchId} status → ${newStatus}`,
+        detail: dispatchQueue.find((d) => d.id === dispatchId)?.area || "",
+        icon: "radio",
+        tone: "blue"
+      },
+      ...current
+    ]);
+    flashNotice(`${dispatchId} updated to "${newStatus}".`);
+  }
+
+  function updateDispatchAsset(dispatchId, newAsset) {
+    setDispatchQueue((current) =>
+      current.map((item) =>
+        item.id === dispatchId ? { ...item, asset: newAsset } : item
+      )
+    );
+    flashNotice(`${dispatchId} reassigned to ${newAsset}.`);
   }
 
   function openReportModal() {
     setReportForm(emptyReportForm);
     setReportError("");
+    setAiAnalysis(null);
+    setAiLoading(false);
     setIsReportOpen(true);
   }
 
@@ -556,7 +838,7 @@ function Dashboard() {
     updateReportFields({ photo: null, photoName: null });
   }
 
-  function submitReport(event) {
+  async function submitReport(event) {
     event.preventDefault();
 
     const description = reportForm.description.trim();
@@ -581,6 +863,36 @@ function Dashboard() {
       return;
     }
 
+    // ── Step 1: Run AI prank-detection before adding to queue ─────────────
+    setAiLoading(true);
+    setAiAnalysis(null);
+    setReportError("");
+
+    const analysis = await analyzeReportWithGemini({
+      description,
+      location,
+      peopleAffected,
+      photoBase64: reportForm.photo
+    });
+
+    setAiLoading(false);
+    setAiAnalysis(analysis);
+
+    // If AI flags it as a likely prank with high confidence, block submission
+    // and ask the dispatcher to review — they can override by submitting again.
+    if (analysis.verdict === "prank" && (analysis.confidence ?? 0) >= 75) {
+      // Don't auto-block: show the warning but let the dispatcher decide.
+      // They can click Submit again to force-add it.
+      if (!reportForm._aiOverride) {
+        setReportError(
+          `⚠️ AI flagged this as a likely prank (${analysis.confidence}% confidence): ${analysis.reason} — Click Submit again to override and send anyway.`
+        );
+        setReportForm((current) => ({ ...current, _aiOverride: true }));
+        return;
+      }
+    }
+    // ──────────────────────────────────────────────────────────────────────
+
     const number = nextReportNumber.current;
     nextReportNumber.current += 1;
 
@@ -590,14 +902,12 @@ function Dashboard() {
     const severity = severityFromPeopleAffected(peopleAffected);
     const now = new Date();
 
-    // Prefer the exact coordinates from live location / search / map click.
-    // Only fall back to a random jitter if the reporter typed a location
-    // but never actually picked a point, so the pin stays honest instead of
-    // silently landing somewhere unrelated to the text.
     const hasPreciseLocation = reportForm.lat != null && reportForm.lng != null;
     const { lat, lng } = hasPreciseLocation
       ? { lat: reportForm.lat, lng: reportForm.lng }
       : jitterAroundCenter(MAP_CENTER);
+
+    const isPotentialPrank = analysis.verdict === "prank";
 
     const newIncident = {
       id,
@@ -607,14 +917,18 @@ function Dashboard() {
       detail: description,
       distance: hasPreciseLocation ? "Pinpointed" : "Approx. location",
       severity,
-      status: "Pending dispatch",
+      status: isPotentialPrank ? "⚠️ Verify — possible prank" : "Pending dispatch",
       eta: "--:--",
       units: "Unassigned",
       lat,
       lng,
       icon,
       photoUrl: reportForm.photo || null,
-      photoName: reportForm.photoName || null
+      photoName: reportForm.photoName || null,
+      aiVerdict: analysis.verdict,
+      aiConfidence: analysis.confidence,
+      aiReason: analysis.reason,
+      isPotentialPrank
     };
 
     const newDispatchItem = {
@@ -623,17 +937,17 @@ function Dashboard() {
       area: location,
       asset: "Unassigned",
       lead: "Unassigned",
-      priority: severity === "critical" ? "Priority 1" : "Priority 2",
-      status: "Reported",
+      priority: isPotentialPrank ? "⚠️ Verify" : severity === "critical" ? "Priority 1" : "Priority 2",
+      status: isPotentialPrank ? "Flagged" : "Reported",
       time: "--:--"
     };
 
     const newActivityItem = {
       time: formatClockTime(now),
-      title: `New report: ${type}`,
-      detail: `${location} · ${peopleAffected} affected`,
+      title: isPotentialPrank ? `⚠️ Flagged report: ${type}` : `New report: ${type}`,
+      detail: `${location} · ${peopleAffected} affected${isPotentialPrank ? " · AI: possible prank" : ""}`,
       icon,
-      tone: severity === "critical" ? "red" : "orange"
+      tone: isPotentialPrank ? "red" : severity === "critical" ? "red" : "orange"
     };
 
     setIncidents((current) => [newIncident, ...current]);
@@ -642,7 +956,10 @@ function Dashboard() {
     setSelectedIncident(id);
     setIncidentFilter("All");
     setIsReportOpen(false);
-    flashNotice(`${id} submitted and added to the incident queue.`);
+    setSubmittedCount((c) => c + 1); // increment live counter
+
+    const prankNote = isPotentialPrank ? " — marked for verification (possible prank)" : "";
+    flashNotice(`${id} submitted and added to the incident queue${prankNote}.`);
   }
 
   return (
@@ -691,30 +1008,55 @@ function Dashboard() {
             <span>Network status</span>
           </div>
           <strong>All systems nominal</strong>
-          <span>Last sync 10:42:18</span>
+          <span>Last sync {clock}</span>
         </div>
 
         <button
-          className="nav-item sidebar-settings"
-          onClick={() => flashNotice("Settings are ready when you are.")}
+          className={`nav-item sidebar-settings ${activeNav === "navSettings" ? "is-active" : ""}`}
+          onClick={() => setActiveNav("navSettings")}
         >
           <Icon name="settings" size={18} />
           <span>Settings</span>
         </button>
 
         <div className="operator">
-          <div className="operator-avatar">AM</div>
+          <div className="operator-avatar">{profile.name.split(" ").map(w=>w[0]).join("")}</div>
           <div className="operator-copy">
-            <strong>Alex Monroe</strong>
-            <span>Shift commander</span>
+            <strong>{profile.name}</strong>
+            <span>{profile.role}</span>
           </div>
-          <button
-            className="operator-more"
-            aria-label="Open operator menu"
-            onClick={() => flashNotice("Operator menu opened.")}
-          >
-            <Icon name="more" size={17} />
-          </button>
+          <div style={{ position: "relative" }}>
+            <button
+              className="operator-more panel-trigger"
+              aria-label="Open operator menu"
+              onClick={() => { setIsOperatorOpen(o => !o); setIsNotifOpen(false); }}
+            >
+              <Icon name="more" size={17} />
+            </button>
+            {isOperatorOpen && (
+              <div className="popup-panel operator-panel">
+                <div className="popup-panel-header">
+                  <strong>{profile.name}</strong>
+                  <span style={{ fontSize: 12, opacity: 0.5 }}>{profile.badge}</span>
+                </div>
+                <div className="operator-menu-list">
+                  <button onClick={() => { setActiveNav("navSettings"); setIsOperatorOpen(false); }}>
+                    <Icon name="settings" size={15} /> Profile &amp; Settings
+                  </button>
+                  <button onClick={() => { setActiveNav("navSettings"); setIsOperatorOpen(false); }}>
+                    <Icon name="bell" size={15} /> Notification preferences
+                  </button>
+                  <button onClick={() => { flashNotice("Shift handed over."); setIsOperatorOpen(false); }}>
+                    <Icon name="users" size={15} /> Hand off shift
+                  </button>
+                  <div className="operator-menu-divider" />
+                  <button className="danger" onClick={() => { flashNotice("Signed out. Redirecting…"); setIsOperatorOpen(false); }}>
+                    <Icon name="arrow-right" size={15} /> Sign out
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </aside>
 
@@ -738,14 +1080,44 @@ function Dashboard() {
               <kbd>⌘ K</kbd>
             </label>
 
-            <button
-              className="icon-button notification-button"
-              aria-label="View notifications"
-              onClick={() => flashNotice("You have 3 unread notifications.")}
-            >
-              <Icon name="bell" size={18} />
-              <span className="notification-dot" />
-            </button>
+            {/* Notifications bell */}
+            <div style={{ position: "relative" }}>
+              <button
+                className="icon-button notification-button panel-trigger"
+                aria-label="View notifications"
+                onClick={() => { setIsNotifOpen(o => !o); setIsOperatorOpen(false); }}
+              >
+                <Icon name="bell" size={18} />
+                {notifications.some(n => !n.read) && <span className="notification-dot" />}
+              </button>
+
+              {isNotifOpen && (
+                <div className="popup-panel notif-panel">
+                  <div className="popup-panel-header">
+                    <strong>Notifications</strong>
+                    <button className="text-button compact" onClick={markAllRead}>Mark all read</button>
+                  </div>
+                  <div className="popup-panel-list">
+                    {notifications.map(n => (
+                      <div
+                        key={n.id}
+                        className={`notif-row ${n.read ? "is-read" : ""}`}
+                        onClick={() => setNotifications(ns => ns.map(x => x.id === n.id ? { ...x, read: true } : x))}
+                      >
+                        <span className={`activity-icon ${n.read ? "slate" : "green"}`}>
+                          <Icon name={n.icon} size={14} />
+                        </span>
+                        <div className="notif-copy">
+                          <strong>{n.title}</strong>
+                          <span>{n.detail}</span>
+                        </div>
+                        <time>{n.time}</time>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
 
             <button
               className="date-pill language-pill"
@@ -757,12 +1129,18 @@ function Dashboard() {
 
             <div className="date-pill">
               <Icon name="clock" size={16} />
-              <span>Sun, Sep 13</span>
+              <span>{clock}</span>
             </div>
           </div>
         </header>
 
         <div className="content-wrap">
+
+          {/* ══════════════════════════════════════════════════
+              COMMAND CENTER  (default landing view)
+          ══════════════════════════════════════════════════ */}
+          {activeNav === "navCommandCenter" && (
+            <>
           <section className="hero">
             <div className="hero-copy">
               <div className="eyebrow">
@@ -787,9 +1165,7 @@ function Dashboard() {
               </div>
               <button
                 className="primary-button"
-                onClick={() =>
-                  flashNotice("Broadcast channel opened for dispatch.")
-                }
+                onClick={() => setIsBroadcastOpen(true)}
               >
                 {t("broadcastUpdate")}
                 <Icon name="arrow-right" size={16} />
@@ -801,73 +1177,6 @@ function Dashboard() {
             </div>
           </section>
 
-          <section className="metric-grid" aria-label="Operational metrics">
-            <TiltCard as="article" className="metric-card">
-              <div className="metric-topline">
-                <span className="metric-label">{t("metricOperationalUnits")}</span>
-                <span className="metric-icon green">
-                  <Icon name="shield" size={17} />
-                </span>
-              </div>
-              <div className="metric-value">50</div>
-              <div className="metric-bottom">
-                <span className="metric-trend positive">
-                  <Icon name="arrow-up" size={13} />
-                  8.2%
-                </span>
-                <span>vs. last shift</span>
-              </div>
-            </TiltCard>
-
-            <TiltCard as="article" className="metric-card">
-              <div className="metric-topline">
-                <span className="metric-label">{t("metricResponseTime")}</span>
-                <span className="metric-icon blue">
-                  <Icon name="clock" size={17} />
-                </span>
-              </div>
-              <div className="metric-value">12:24</div>
-              <div className="metric-bottom">
-                <span className="metric-trend positive">
-                  <Icon name="arrow-down" size={13} />
-                  1:18
-                </span>
-                <span>faster today</span>
-              </div>
-            </TiltCard>
-
-            <TiltCard as="article" className="metric-card">
-              <div className="metric-topline">
-                <span className="metric-label">{t("metricOpenIncidents")}</span>
-                <span className="metric-icon orange">
-                  <Icon name="alert" size={17} />
-                </span>
-              </div>
-              <div className="metric-value">18</div>
-              <div className="metric-bottom">
-                <span className="metric-trend neutral">4 active</span>
-                <span>requiring dispatch</span>
-              </div>
-            </TiltCard>
-
-            <TiltCard as="article" className="metric-card">
-              <div className="metric-topline">
-                <span className="metric-label">{t("metricCityCoverage")}</span>
-                <span className="metric-icon violet">
-                  <Icon name="map" size={17} />
-                </span>
-              </div>
-              <div className="metric-value">96.8%</div>
-              <div className="metric-bottom">
-                <span className="metric-trend positive">
-                  <Icon name="arrow-up" size={13} />
-                  2.4%
-                </span>
-                <span>coverage stable</span>
-              </div>
-            </TiltCard>
-          </section>
-
           <section className="section-heading">
             <div>
               <span className="section-kicker">Situational awareness</span>
@@ -875,7 +1184,7 @@ function Dashboard() {
             </div>
             <button
               className="text-button"
-              onClick={() => flashNotice("Full map view selected.")}
+              onClick={() => setActiveNav("navLiveMap")}
             >
               {t("openFullMap")}
               <Icon name="arrow-right" size={15} />
@@ -1000,6 +1309,9 @@ function Dashboard() {
 
                       <span className="incident-copy">
                         <span className="incident-title">
+                          {incident.isPotentialPrank && (
+                            <span className="prank-badge" title={incident.aiReason}>⚠️ Verify</span>
+                          )}
                           {incident.type}
                         </span>
                         <span className="incident-location">
@@ -1052,9 +1364,7 @@ function Dashboard() {
                 <div className="detail-actions">
                   <button
                     className="secondary-button"
-                    onClick={() =>
-                      flashNotice(`Dispatch channel opened for ${activeIncident.id}.`)
-                    }
+                    onClick={() => setActiveNav("navDispatchQueue")}
                   >
                     {t("viewDispatch")}
                     <Icon name="arrow-right" size={15} />
@@ -1079,103 +1389,80 @@ function Dashboard() {
                 </div>
               </div>
             </TiltCard>
+          </section>
 
-            <TiltCard as="article" className="dispatch-card panel-card">
-              <div className="panel-heading">
-                <div>
-                  <span className="panel-overline">Current shift</span>
-                  <h3>{t("dispatchQueueTitle")}</h3>
-                </div>
-                <button
-                  className="icon-button subtle"
-                  aria-label="Add dispatch"
-                  onClick={() => flashNotice("New dispatch form opened.")}
-                >
-                  <Icon name="plus" size={17} />
-                </button>
-              </div>
-
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Call</th>
-                      <th>Area</th>
-                      <th>Assigned asset</th>
-                      <th>Lead</th>
-                      <th>Priority</th>
-                      <th>Status</th>
-                      <th>ETA</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {visibleQueue.map((item) => (
-                      <tr key={item.id}>
-                        <td>
-                          <div className="call-cell">
-                            <span className="call-id">{item.id}</span>
-                            <strong>{item.call}</strong>
-                          </div>
-                        </td>
-                        <td>{item.area}</td>
-                        <td>
-                          <span className="asset-pill">
-                            <span className="asset-dot" />
-                            {item.asset}
-                          </span>
-                        </td>
-                        <td>{item.lead}</td>
-                        <td>
-                          <span
-                            className={`priority-tag ${
-                              item.priority === "Priority 1"
-                                ? "priority-one"
-                                : "priority-two"
-                            }`}
-                          >
-                            {item.priority}
-                          </span>
-                        </td>
-                        <td>
-                          <span
-                            className={`status-tag ${item.status
-                              .toLowerCase()
-                              .replace(" ", "-")}`}
-                          >
-                            <i />
-                            {item.status}
-                          </span>
-                        </td>
-                        <td>
-                          <strong className="eta-value">{item.time}</strong>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-
-                {visibleQueue.length === 0 && (
-                  <div className="empty-state">
-                    No dispatches match "{queueSearch}".
-                  </div>
-                )}
-              </div>
-
-              <div className="table-footer">
-                <span>
-                  Showing {visibleQueue.length} of {dispatchQueue.length} active
-                  dispatches
+          {/* ── Operational metrics (below live map so it doesn't distract during active incidents) ── */}
+          <section className="metric-grid" aria-label="Operational metrics">
+            <TiltCard as="article" className="metric-card">
+              <div className="metric-topline">
+                <span className="metric-label">{t("metricOperationalUnits")}</span>
+                <span className="metric-icon green">
+                  <Icon name="shield" size={17} />
                 </span>
-                <button
-                  className="text-button"
-                  onClick={() => flashNotice("All dispatches view selected.")}
-                >
-                  View all
-                  <Icon name="arrow-right" size={15} />
-                </button>
+              </div>
+              <div className="metric-value">{dispatchQueue.filter(d => d.status !== "Resolved").length}</div>
+              <div className="metric-bottom">
+                <span className={`metric-trend ${dispatchQueue.filter(d => d.status !== "Resolved").length > 0 ? "positive" : "neutral"}`}>
+                  {dispatchQueue.filter(d => d.status !== "Resolved").length === 0
+                    ? "None active"
+                    : <><Icon name="arrow-up" size={13} />{dispatchQueue.filter(d => d.status !== "Resolved").length} active</>}
+                </span>
+                <span>units deployed</span>
               </div>
             </TiltCard>
 
+            <TiltCard as="article" className="metric-card">
+              <div className="metric-topline">
+                <span className="metric-label">{t("metricResponseTime")}</span>
+                <span className="metric-icon blue">
+                  <Icon name="clock" size={17} />
+                </span>
+              </div>
+              <div className="metric-value">12:24</div>
+              <div className="metric-bottom">
+                <span className="metric-trend positive">
+                  <Icon name="arrow-down" size={13} />
+                  1:18
+                </span>
+                <span>faster today</span>
+              </div>
+            </TiltCard>
+
+            <TiltCard as="article" className="metric-card">
+              <div className="metric-topline">
+                <span className="metric-label">{t("metricOpenIncidents")}</span>
+                <span className="metric-icon orange">
+                  <Icon name="alert" size={17} />
+                </span>
+              </div>
+              <div className="metric-value">{submittedCount}</div>
+              <div className="metric-bottom">
+                <span className="metric-trend neutral">
+                  {submittedCount === 0 ? "None yet" : `${incidents.slice(0, submittedCount).filter(i => i.severity === "critical").length} critical`}
+                </span>
+                <span>{submittedCount === 0 ? "submit a report to begin" : "requiring dispatch"}</span>
+              </div>
+            </TiltCard>
+
+            <TiltCard as="article" className="metric-card">
+              <div className="metric-topline">
+                <span className="metric-label">{t("metricCityCoverage")}</span>
+                <span className="metric-icon violet">
+                  <Icon name="map" size={17} />
+                </span>
+              </div>
+              <div className="metric-value">96.8%</div>
+              <div className="metric-bottom">
+                <span className="metric-trend positive">
+                  <Icon name="arrow-up" size={13} />
+                  2.4%
+                </span>
+                <span>coverage stable</span>
+              </div>
+            </TiltCard>
+          </section>
+
+          <section className="panels-grid">
             <TiltCard as="article" className="resource-card panel-card">
               <div className="panel-heading">
                 <div>
@@ -1246,6 +1533,407 @@ function Dashboard() {
               </button>
             </TiltCard>
           </section>
+            </>
+          )}
+
+          {/* ══════════════════════════════════════════════════
+              LIVE MAP  — full-screen map view
+          ══════════════════════════════════════════════════ */}
+          {activeNav === "navLiveMap" && (
+            <section className="view-livemap">
+              <div className="view-header">
+                <div>
+                  <span className="section-kicker">City grid / live view</span>
+                  <h2>Live Response Map</h2>
+                </div>
+                <div className="map-controls">
+                  <button className="map-control active">{t("mapLive")}</button>
+                  <button className="map-control" onClick={() => flashNotice("Historical playback selected.")}>
+                    {t("mapPlayback")}
+                  </button>
+                  <button
+                    className={`map-control ${showUserLocation ? "active" : ""}`}
+                    onClick={toggleUserLocation}
+                  >
+                    {t("mapMyLocation")}
+                  </button>
+                  {showUserLocation && locationStatus === "locating" && (
+                    <span className="location-status-note">Locating…</span>
+                  )}
+                  {showUserLocation && locationStatus === "error" && (
+                    <span className="location-status-note is-error">Location failed</span>
+                  )}
+                </div>
+              </div>
+
+              <div className="livemap-body">
+                <div className="livemap-map-wrap">
+                  <MapView
+                    incidents={incidents}
+                    selectedIncident={selectedIncident}
+                    onSelectIncident={setSelectedIncident}
+                    center={MAP_CENTER}
+                    showUserLocation={showUserLocation}
+                    onLocationStatusChange={handleLocationStatusChange}
+                  />
+                  <div className="map-legend">
+                    <span><i className="legend-dot critical" />{t("legendCritical")}</span>
+                    <span><i className="legend-dot urgent" />{t("legendActive")}</span>
+                    <span><i className="legend-dot watch" />{t("legendMonitoring")}</span>
+                  </div>
+                </div>
+
+                <div className="livemap-sidebar">
+                  <div className="livemap-sidebar-heading">
+                    <span className="panel-overline">{t("priorityQueue")}</span>
+                    <span className="count-badge">{incidents.length}</span>
+                  </div>
+                  <div className="filter-row">
+                    {["All", "Critical", "Medical", "Fire"].map((filter) => (
+                      <button
+                        key={filter}
+                        className={`filter-button ${incidentFilter === filter ? "is-active" : ""}`}
+                        onClick={() => setIncidentFilter(filter)}
+                      >
+                        {filter}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="incident-list livemap-incident-list">
+                    {visibleIncidents.map((incident) => {
+                      const isSelected = incident.id === selectedIncident;
+                      return (
+                        <button
+                          key={incident.id}
+                          className={`incident-item ${isSelected ? "is-selected" : ""}`}
+                          onClick={() => setSelectedIncident(incident.id)}
+                        >
+                          <span className={`incident-icon ${incident.severity}`}>
+                            <Icon name={incident.icon} size={17} />
+                          </span>
+                          <span className="incident-copy">
+                            <span className="incident-title">
+                              {incident.isPotentialPrank && (
+                                <span className="prank-badge" title={incident.aiReason}>⚠️ Verify</span>
+                              )}
+                              {incident.type}
+                            </span>
+                            <span className="incident-location">{incident.location}</span>
+                          </span>
+                          <span className="incident-meta">
+                            <strong>{incident.eta}</strong>
+                            <small>{incident.status}</small>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <button className="primary-button livemap-report-btn" onClick={openReportModal}>
+                    <Icon name="plus" size={15} />
+                    Report emergency
+                  </button>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {/* ══════════════════════════════════════════════════
+              DISPATCH QUEUE  — full dispatch management view
+          ══════════════════════════════════════════════════ */}
+          {activeNav === "navDispatchQueue" && (
+            <section className="view-dispatch">
+              <div className="view-header">
+                <div>
+                  <span className="section-kicker">Current shift</span>
+                  <h2>{t("dispatchQueueTitle")}</h2>
+                </div>
+                <div style={{ display: "flex", gap: 10 }}>
+                  <label className="search-box inline">
+                    <Icon name="search" size={16} />
+                    <input
+                      type="search"
+                      placeholder="Search dispatches…"
+                      value={queueSearch}
+                      onChange={(e) => setQueueSearch(e.target.value)}
+                    />
+                  </label>
+                  <button className="primary-button" onClick={() => flashNotice("New dispatch form opened.")}>
+                    <Icon name="plus" size={15} />
+                    New dispatch
+                  </button>
+                </div>
+              </div>
+
+              <TiltCard className="panel-card dispatch-view-card">
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Call</th>
+                        <th>Area</th>
+                        <th>Assigned asset</th>
+                        <th>Lead</th>
+                        <th>Priority</th>
+                        <th>Status</th>
+                        <th>ETA</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {visibleQueue.map((item) => (
+                        <tr key={item.id}>
+                          <td>
+                            <div className="call-cell">
+                              <span className="call-id">{item.id}</span>
+                              <strong>{item.call}</strong>
+                            </div>
+                          </td>
+                          <td>{item.area}</td>
+                          <td>
+                            <input
+                              className="inline-edit-input"
+                              value={item.asset}
+                              onChange={(e) => updateDispatchAsset(item.id, e.target.value)}
+                              title="Click to reassign asset"
+                            />
+                          </td>
+                          <td>{item.lead}</td>
+                          <td>
+                            <span className={`priority-tag ${item.priority === "Priority 1" ? "priority-one" : "priority-two"}`}>
+                              {item.priority}
+                            </span>
+                          </td>
+                          <td>
+                            <StatusDropdown
+                              value={item.status}
+                              onChange={(s) => updateDispatchStatus(item.id, s)}
+                            />
+                          </td>
+                          <td>
+                            <strong className="eta-value">{item.time}</strong>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {visibleQueue.length === 0 && (
+                    <div className="empty-state">No dispatches match "{queueSearch}".</div>
+                  )}
+                </div>
+                <div className="table-footer">
+                  <span>Showing {visibleQueue.length} of {dispatchQueue.length} active dispatches</span>
+                </div>
+              </TiltCard>
+            </section>
+          )}
+
+          {/* ══════════════════════════════════════════════════
+              RESOURCES
+          ══════════════════════════════════════════════════ */}
+          {activeNav === "navResources" && (
+            <section className="view-resources">
+              <div className="view-header">
+                <div>
+                  <span className="section-kicker">Availability</span>
+                  <h2>{t("resourceReadiness")}</h2>
+                </div>
+                <button className="text-button" onClick={() => flashNotice("Resource roster opened.")}>
+                  Full roster
+                  <Icon name="arrow-right" size={15} />
+                </button>
+              </div>
+
+              <div className="resource-grid-view">
+                {resources.map((resource) => (
+                  <TiltCard as="article" className="metric-card resource-view-card" key={resource.label}>
+                    <div className="metric-topline">
+                      <span className="metric-label">{resource.label}</span>
+                      <span className={`metric-icon ${resource.tone}`}>
+                        <Icon name="shield" size={17} />
+                      </span>
+                    </div>
+                    <div className="metric-value">{resource.value}</div>
+                    <div className="progress-track" style={{ marginTop: 10 }}>
+                      <span className={`progress-fill ${resource.tone}`} style={{ width: `${resource.percent}%` }} />
+                    </div>
+                    <div className="metric-bottom" style={{ marginTop: 8 }}>
+                      <span className="metric-trend neutral">{resource.percent}%</span>
+                      <span>{resource.detail}</span>
+                    </div>
+                  </TiltCard>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* ══════════════════════════════════════════════════
+              REPORTS
+          ══════════════════════════════════════════════════ */}
+          {activeNav === "navReports" && (
+            <section className="view-reports">
+              <div className="view-header">
+                <div>
+                  <span className="section-kicker">Activity log</span>
+                  <h2>Incident Reports</h2>
+                </div>
+                <button className="primary-button" onClick={openReportModal}>
+                  <Icon name="plus" size={15} />
+                  File new report
+                </button>
+              </div>
+
+              <div className="reports-list">
+                {[...incidents].reverse().map((inc) => (
+                  <TiltCard key={inc.id} className="panel-card report-row-card">
+                    <div className="report-row">
+                      <span className={`incident-icon ${inc.severity}`}>
+                        <Icon name={inc.icon} size={18} />
+                      </span>
+                      <div className="report-row-copy">
+                        <div className="report-row-top">
+                          <strong>{inc.type}</strong>
+                          <span className="incident-id">{inc.id}</span>
+                          {inc.isPotentialPrank && (
+                            <span className="prank-badge" title={inc.aiReason}>⚠️ Verify</span>
+                          )}
+                        </div>
+                        <span>{inc.location} · {inc.detail}</span>
+                      </div>
+                      <span className={`severity-label ${inc.severity}`}>
+                        {inc.severity}
+                      </span>
+                      <span className="status-tag">{inc.status}</span>
+                    </div>
+                  </TiltCard>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* ══════════════════════════════════════════════════
+              SETTINGS  — profile & preferences
+          ══════════════════════════════════════════════════ */}
+          {activeNav === "navSettings" && (
+            <section className="view-settings">
+              <div className="view-header">
+                <div>
+                  <span className="section-kicker">Account</span>
+                  <h2>Profile &amp; Settings</h2>
+                </div>
+              </div>
+
+              <div className="settings-grid">
+                {/* ── Profile card ── */}
+                <TiltCard className="panel-card settings-card">
+                  <div className="settings-card-heading">
+                    <span className="panel-overline">Identity</span>
+                    <h3>Profile</h3>
+                  </div>
+                  <div className="settings-avatar-row">
+                    <div className="operator-avatar large">{profile.name.split(" ").map(w => w[0]).join("")}</div>
+                    <div>
+                      <strong>{profile.name}</strong>
+                      <span style={{ display: "block", fontSize: 13, opacity: 0.6 }}>{profile.role}</span>
+                    </div>
+                  </div>
+                  <div className="settings-fields">
+                    {[
+                      { label: "Full name", key: "name", type: "text" },
+                      { label: "Email", key: "email", type: "email" },
+                      { label: "Phone", key: "phone", type: "tel" },
+                      { label: "Badge / ID", key: "badge", type: "text" },
+                      { label: "Station", key: "station", type: "text" }
+                    ].map(({ label, key, type }) => (
+                      <label className="settings-field" key={key}>
+                        <span>{label}</span>
+                        <input
+                          type={type}
+                          value={profile[key]}
+                          onChange={(e) => setProfile(p => ({ ...p, [key]: e.target.value }))}
+                        />
+                      </label>
+                    ))}
+                  </div>
+                  <div className="settings-actions">
+                    <button className="primary-button" onClick={() => flashNotice("Profile saved.")}>
+                      Save profile <Icon name="check" size={15} />
+                    </button>
+                  </div>
+                </TiltCard>
+
+                {/* ── Notifications ── */}
+                <TiltCard className="panel-card settings-card">
+                  <div className="settings-card-heading">
+                    <span className="panel-overline">Alerts</span>
+                    <h3>Notifications</h3>
+                  </div>
+                  <div className="settings-toggle-list">
+                    {[
+                      { key: "email", label: "Email alerts",  desc: "Incident summaries sent to your email" },
+                      { key: "sms",   label: "SMS alerts",    desc: "Critical-priority incidents via text" },
+                      { key: "push",  label: "Push alerts",   desc: "Browser push notifications" }
+                    ].map(({ key, label, desc }) => (
+                      <div className="settings-toggle-row" key={key}>
+                        <div>
+                          <strong>{label}</strong>
+                          <span>{desc}</span>
+                        </div>
+                        <button
+                          className={`toggle-switch ${profile.notifications[key] ? "is-on" : ""}`}
+                          onClick={() => setProfile(p => ({ ...p, notifications: { ...p.notifications, [key]: !p.notifications[key] } }))}
+                          aria-label={`Toggle ${label}`}
+                        >
+                          <span className="toggle-thumb" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </TiltCard>
+
+                {/* ── Appearance ── */}
+                <TiltCard className="panel-card settings-card">
+                  <div className="settings-card-heading">
+                    <span className="panel-overline">Display</span>
+                    <h3>Appearance &amp; Language</h3>
+                  </div>
+                  <div className="settings-fields">
+                    <label className="settings-field">
+                      <span>Theme</span>
+                      <select value={profile.theme} onChange={(e) => setProfile(p => ({ ...p, theme: e.target.value }))}>
+                        <option value="dark">Dark (default)</option>
+                        <option value="light">Light</option>
+                        <option value="system">Follow system</option>
+                      </select>
+                    </label>
+                    <label className="settings-field">
+                      <span>Language</span>
+                      <select value={language} onChange={(e) => setLanguage(e.target.value)}>
+                        {languages.map((l) => (
+                          <option key={l.code} value={l.code}>{l.nativeName}</option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <div className="settings-actions">
+                    <button className="primary-button" onClick={() => flashNotice("Appearance saved.")}>
+                      Save appearance <Icon name="check" size={15} />
+                    </button>
+                  </div>
+                </TiltCard>
+
+                {/* ── Session ── */}
+                <TiltCard className="panel-card settings-card settings-danger">
+                  <div className="settings-card-heading">
+                    <span className="panel-overline">Session</span>
+                    <h3>Account actions</h3>
+                  </div>
+                  <div className="settings-danger-actions">
+                    <button className="secondary-button" onClick={() => flashNotice("Signed out. Redirecting…")}>Sign out</button>
+                    <button className="secondary-button danger-btn" onClick={() => flashNotice("Contact your system administrator to deactivate.")}>Deactivate account</button>
+                  </div>
+                </TiltCard>
+              </div>
+            </section>
+          )}
 
           <footer className="page-footer">
             <span>RescueGrid Operations Platform</span>
@@ -1273,6 +1961,47 @@ function Dashboard() {
               setIsLanguageModalOpen(false);
             }}
           />
+        )}
+
+        {/* ── Broadcast modal ── */}
+        {isBroadcastOpen && (
+          <div className="modal-overlay" role="presentation" onClick={() => setIsBroadcastOpen(false)}>
+            <div className="modal-card" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()}>
+              <div className="modal-heading">
+                <h3>📢 Broadcast to all units</h3>
+                <button className="modal-close" aria-label="Close" onClick={() => setIsBroadcastOpen(false)}>
+                  <Icon name="plus" size={16} />
+                </button>
+              </div>
+              <div className="modal-form">
+                <label className="modal-field">
+                  <span>Message</span>
+                  <textarea
+                    rows={4}
+                    placeholder="All units: be advised of traffic closure on Cedar Ave…"
+                    value={broadcastMsg}
+                    onChange={e => setBroadcastMsg(e.target.value)}
+                    autoFocus
+                  />
+                </label>
+                <label className="modal-field">
+                  <span>Priority level</span>
+                  <select className="settings-field input" style={{ marginTop: 0 }}>
+                    <option>Informational</option>
+                    <option>Advisory</option>
+                    <option>Urgent</option>
+                    <option>Emergency</option>
+                  </select>
+                </label>
+                <div className="modal-actions">
+                  <button className="secondary-button" onClick={() => setIsBroadcastOpen(false)}>Cancel</button>
+                  <button className="primary-button" onClick={sendBroadcast} disabled={!broadcastMsg.trim()}>
+                    Send broadcast <Icon name="arrow-right" size={15} />
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
         )}
 
         {isReportOpen && (
@@ -1365,6 +2094,32 @@ function Dashboard() {
                     }
                   />
                 </label>
+
+                {/* ── AI prank-detection status ── */}
+                {aiLoading && (
+                  <div className="ai-check-status is-loading">
+                    <span className="ai-spinner" />
+                    Analyzing report with AI…
+                  </div>
+                )}
+
+                {!aiLoading && aiAnalysis && (
+                  <div className={`ai-check-status ${aiAnalysis.verdict === "prank" ? "is-prank" : "is-real"}`}>
+                    <span className="ai-verdict-icon">
+                      {aiAnalysis.verdict === "prank" ? "⚠️" : "✅"}
+                    </span>
+                    <span>
+                      <strong>
+                        {aiAnalysis.verdict === "prank"
+                          ? `AI: Possible prank (${aiAnalysis.confidence ?? "?"}% confidence)`
+                          : `AI: Looks like a real emergency${aiAnalysis.confidence != null ? ` (${aiAnalysis.confidence}% confidence)` : ""}`}
+                      </strong>
+                      {aiAnalysis.reason && (
+                        <small style={{ display: "block", marginTop: 2 }}>{aiAnalysis.reason}</small>
+                      )}
+                    </span>
+                  </div>
+                )}
 
                 {reportError && (
                   <p className="modal-error">{reportError}</p>
