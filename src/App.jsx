@@ -1,7 +1,7 @@
 import React, { useMemo, useRef, useState, useEffect, useCallback } from "react";
 import { supabase, fetchIncidents, fetchDispatchQueue, fetchActivity, upsertIncident, upsertDispatch, insertActivity, fetchSubmittedCount } from "./supabase.js";
 import MapView from "./MapView";
-import LocationPicker from "./LocationPicker";
+import LocationPicker from "./Locationpicker";
 import LanguageSelector from "./LanguageSelector";
 import { LanguageProvider, useLanguage } from "./i18n/LanguageContext";
 import "./map.css";
