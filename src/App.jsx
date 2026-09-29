@@ -1,4 +1,5 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useMemo, useRef, useState, useEffect, useCallback } from "react";
+import { supabase, fetchIncidents, fetchDispatchQueue, fetchActivity, upsertIncident, upsertDispatch, insertActivity, fetchSubmittedCount } from "./supabase.js";
 import MapView from "./MapView";
 import LocationPicker from "./LocationPicker";
 import LanguageSelector from "./LanguageSelector";
@@ -186,8 +187,7 @@ const initialActivity = [
 ];
 
 // ─── Gemini AI prank-detection ──────────────────────────────────────────────
-// Leave GEMINI_API_KEY as an empty string — paste your key here before running.
-const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
+const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || "";
 
 async function analyzeReportWithGemini({ description, location, peopleAffected, photoBase64 }) {
   if (!GEMINI_API_KEY) {
@@ -573,14 +573,19 @@ function Dashboard() {
   const { language, hasChosenLanguage, setLanguage, t, languages } = useLanguage();
   const [isLanguageModalOpen, setIsLanguageModalOpen] = useState(!hasChosenLanguage);
   const [activeNav, setActiveNav] = useState("navCommandCenter");
+  const [dbLoading, setDbLoading] = useState(true);
+
+  // ── State: seeded data as fallback, Supabase as source of truth ──────────
   const [incidents, setIncidents] = useState(initialIncidents);
   const [dispatchQueue, setDispatchQueue] = useState(initialDispatchQueue);
   const [activity, setActivity] = useState(initialActivity);
   const [selectedIncident, setSelectedIncident] = useState("RG-1048");
   const [incidentFilter, setIncidentFilter] = useState("All");
   const [queueSearch, setQueueSearch] = useState("");
-  const [acknowledged, setAcknowledged] = useState([]);
-  const [submittedCount, setSubmittedCount] = useState(0); // starts at 0, increments on each new report
+  const [acknowledged, setAcknowledged] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("rg_acknowledged") || "[]"); } catch { return []; }
+  });
+  const [submittedCount, setSubmittedCount] = useState(0);
   const [notice, setNotice] = useState("");
   const [showUserLocation, setShowUserLocation] = useState(false);
   const [locationStatus, setLocationStatus] = useState("idle");
@@ -590,30 +595,138 @@ function Dashboard() {
   const [aiAnalysis, setAiAnalysis] = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
   // Panels / modals
-  const [isNotifOpen, setIsNotifOpen]       = useState(false);
+  const [isNotifOpen, setIsNotifOpen]         = useState(false);
   const [isBroadcastOpen, setIsBroadcastOpen] = useState(false);
-  const [isOperatorOpen, setIsOperatorOpen]  = useState(false);
-  const [broadcastMsg, setBroadcastMsg]      = useState("");
-  const [notifications, setNotifications]    = useState([
-    { id: 1, read: false, icon: "fire",    title: "Engine 14 dispatched",   detail: "Westhaven Market · Structure fire",          time: "10:42" },
-    { id: 2, read: false, icon: "medical", title: "Medic 07 en route",      detail: "Northpoint Apartments · Cardiac response",   time: "10:41" },
-    { id: 3, read: false, icon: "alert",   title: "Gas odor escalation",    detail: "Edison Row · Utility team notified",          time: "10:38" },
-    { id: 4, read: true,  icon: "cloud",   title: "Weather advisory",       detail: "Visibility reduced in east sector",           time: "10:36" },
-    { id: 5, read: true,  icon: "car",     title: "Patrol 22 on scene",     detail: "Cedar & 8th Avenue · Vehicle collision",     time: "10:34" },
+  const [isOperatorOpen, setIsOperatorOpen]   = useState(false);
+  const [broadcastMsg, setBroadcastMsg]        = useState("");
+  const [notifications, setNotifications]      = useState([
+    { id: 1, read: false, icon: "fire",    title: "Engine 14 dispatched",   detail: "Westhaven Market · Structure fire",        time: "now" },
+    { id: 2, read: false, icon: "medical", title: "Medic 07 en route",      detail: "Northpoint Apartments · Cardiac response", time: "2m ago" },
+    { id: 3, read: false, icon: "alert",   title: "Gas odor escalation",    detail: "Edison Row · Utility team notified",        time: "6m ago" },
+    { id: 4, read: true,  icon: "cloud",   title: "Weather advisory",       detail: "Visibility reduced in east sector",         time: "8m ago" },
+    { id: 5, read: true,  icon: "car",     title: "Patrol 22 on scene",     detail: "Cedar & 8th Avenue · Vehicle collision",   time: "10m ago" },
   ]);
-  // Profile / settings state
-  const [profile, setProfile] = useState({
-    name: "Alex Monroe",
-    role: "Shift commander",
-    email: "a.monroe@rescuegrid.ops",
-    phone: "+1 555-0192",
-    badge: "RG-4421",
-    station: "Station 14 — Downtown",
-    notifications: { email: true, sms: true, push: false },
-    theme: "dark"
+  const [profile, setProfile] = useState(() => {
+    try {
+      const saved = localStorage.getItem("rg_profile");
+      return saved ? JSON.parse(saved) : {
+        name: "Alex Monroe", role: "Shift commander",
+        email: "a.monroe@rescuegrid.ops", phone: "+1 555-0192",
+        badge: "RG-4421", station: "Station 14 — Downtown",
+        notifications: { email: true, sms: true, push: false }, theme: "dark"
+      };
+    } catch {
+      return { name: "Alex Monroe", role: "Shift commander",
+        email: "a.monroe@rescuegrid.ops", phone: "+1 555-0192",
+        badge: "RG-4421", station: "Station 14 — Downtown",
+        notifications: { email: true, sms: true, push: false }, theme: "dark" };
+    }
   });
   const noticeTimer = useRef(null);
   const nextReportNumber = useRef(1052);
+
+  // ── Persist acknowledged list to localStorage ────────────────────────────
+  useEffect(() => {
+    try { localStorage.setItem("rg_acknowledged", JSON.stringify(acknowledged)); } catch {}
+  }, [acknowledged]);
+
+  // ── Persist profile to localStorage ─────────────────────────────────────
+  useEffect(() => {
+    try { localStorage.setItem("rg_profile", JSON.stringify(profile)); } catch {}
+  }, [profile]);
+
+  // ── Load from Supabase on mount ──────────────────────────────────────────
+  useEffect(() => {
+    async function loadAll() {
+      setDbLoading(true);
+      try {
+        const [inc, disp, act, count] = await Promise.all([
+          fetchIncidents(),
+          fetchDispatchQueue(),
+          fetchActivity(),
+          fetchSubmittedCount()
+        ]);
+        if (inc && inc.length > 0) {
+          // Merge: Supabase rows on top, keep seeded data too (by id dedup)
+          const supaIds = new Set(inc.map(i => i.id));
+          const merged = [...inc, ...initialIncidents.filter(i => !supaIds.has(i.id))];
+          setIncidents(merged);
+          setSelectedIncident(merged[0]?.id || "RG-1048");
+        }
+        if (disp && disp.length > 0) {
+          const supaIds = new Set(disp.map(d => d.id));
+          setDispatchQueue([...disp, ...initialDispatchQueue.filter(d => !supaIds.has(d.id))]);
+        }
+        if (act && act.length > 0) {
+          const supaIds = new Set(act.map(a => `${a.time}-${a.title}`));
+          setActivity([...act, ...initialActivity.filter(a => !supaIds.has(`${a.time}-${a.title}`))]);
+        }
+        if (count) setSubmittedCount(count);
+      } catch (err) {
+        console.warn("Supabase load failed, using local data:", err);
+      }
+      setDbLoading(false);
+    }
+    loadAll();
+  }, []);
+
+  // ── Supabase realtime subscriptions ─────────────────────────────────────
+  useEffect(() => {
+    const incSub = supabase
+      .channel("incidents-realtime")
+      .on("postgres_changes", { event: "*", schema: "public", table: "incidents" }, (payload) => {
+        if (payload.eventType === "INSERT") {
+          setIncidents(curr => {
+            if (curr.find(i => i.id === payload.new.id)) return curr;
+            return [payload.new, ...curr];
+          });
+          setSubmittedCount(c => c + 1);
+          // Add notification
+          setNotifications(ns => [{
+            id: Date.now(), read: false, icon: payload.new.icon || "alert",
+            title: `New report: ${payload.new.type}`,
+            detail: payload.new.location,
+            time: "just now"
+          }, ...ns]);
+        }
+        if (payload.eventType === "UPDATE") {
+          setIncidents(curr => curr.map(i => i.id === payload.new.id ? { ...i, ...payload.new } : i));
+        }
+      })
+      .subscribe();
+
+    const dispSub = supabase
+      .channel("dispatch-realtime")
+      .on("postgres_changes", { event: "*", schema: "public", table: "dispatch_queue" }, (payload) => {
+        if (payload.eventType === "INSERT") {
+          setDispatchQueue(curr => {
+            if (curr.find(d => d.id === payload.new.id)) return curr;
+            return [payload.new, ...curr];
+          });
+        }
+        if (payload.eventType === "UPDATE") {
+          setDispatchQueue(curr => curr.map(d => d.id === payload.new.id ? { ...d, ...payload.new } : d));
+        }
+      })
+      .subscribe();
+
+    const actSub = supabase
+      .channel("activity-realtime")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "activity" }, (payload) => {
+        setActivity(curr => {
+          const key = `${payload.new.time}-${payload.new.title}`;
+          if (curr.find(a => `${a.time}-${a.title}` === key)) return curr;
+          return [payload.new, ...curr];
+        });
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(incSub);
+      supabase.removeChannel(dispSub);
+      supabase.removeChannel(actSub);
+    };
+  }, []);
 
   const activeIncident =
     incidents.find((incident) => incident.id === selectedIncident) ||
@@ -675,6 +788,23 @@ function Dashboard() {
     return () => clearInterval(timer);
   }, []);
 
+  // ── Live ETA countdown ───────────────────────────────────────────────────
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setIncidents(curr => curr.map(inc => {
+        if (!inc.eta || inc.eta === "--:--") return inc;
+        const [m, s] = inc.eta.split(":").map(Number);
+        if (isNaN(m) || isNaN(s)) return inc;
+        let total = m * 60 + s - 1;
+        if (total <= 0) return { ...inc, eta: "00:00", status: inc.status === "Pending dispatch" ? "On scene" : inc.status };
+        const nm = String(Math.floor(total / 60)).padStart(2, "0");
+        const ns = String(total % 60).padStart(2, "0");
+        return { ...inc, eta: `${nm}:${ns}` };
+      }));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
   // Apply theme to <html> so CSS vars switch globally
   React.useEffect(() => {
     document.documentElement.setAttribute("data-theme", profile.theme === "system"
@@ -716,83 +846,45 @@ function Dashboard() {
 
   function acknowledgeIncident(id) {
     if (acknowledged.includes(id)) return;
-
     setAcknowledged((current) => [...current, id]);
-
-    // Update the incident status live
-    setIncidents((current) =>
-      current.map((inc) =>
-        inc.id === id ? { ...inc, status: "Acknowledged" } : inc
-      )
-    );
-
-    // Find the matching dispatch and mark it acknowledged too
-    setDispatchQueue((current) =>
-      current.map((item) => {
-        // match by incident id embedded in dispatch id (D-XXXX vs RG-XXXX share the same number)
-        const incNum = id.replace("RG-", "");
-        const dispNum = item.id.replace("D-", "");
-        if (dispNum === incNum || item.call === incidents.find(i => i.id === id)?.type) {
-          return { ...item, status: "Acknowledged" };
-        }
-        return item;
-      })
-    );
-
-    // Push to activity log
+    setIncidents((current) => current.map((inc) => inc.id === id ? { ...inc, status: "Acknowledged" } : inc));
+    // Mirror to matching dispatch
+    const inc = incidents.find(i => i.id === id);
+    setDispatchQueue((current) => current.map((item) => {
+      const incNum = id.replace("RG-", "");
+      const dispNum = item.id.replace("D-", "");
+      if (dispNum === incNum || (inc && item.call === inc.type)) return { ...item, status: "Acknowledged" };
+      return item;
+    }));
     const now = new Date();
-    setActivity((current) => [
-      {
-        time: formatClockTime(now),
-        title: `${id} acknowledged`,
-        detail: incidents.find((i) => i.id === id)?.location || "",
-        icon: "check",
-        tone: "green"
-      },
-      ...current
-    ]);
-
+    const actItem = { time: formatClockTime(now), title: `${id} acknowledged`, detail: inc?.location || "", icon: "check", tone: "green", created_at: now.toISOString() };
+    setActivity((current) => [actItem, ...current]);
+    // Persist to Supabase
+    upsertIncident({ id, status: "Acknowledged" });
+    insertActivity(actItem);
     flashNotice(`${id} acknowledged and logged.`);
   }
 
   function updateDispatchStatus(dispatchId, newStatus) {
-    setDispatchQueue((current) =>
-      current.map((item) =>
-        item.id === dispatchId ? { ...item, status: newStatus } : item
-      )
-    );
-    // Mirror to incidents
-    setIncidents((current) =>
-      current.map((inc) => {
-        const incNum = inc.id.replace("RG-", "");
-        const dispNum = dispatchId.replace("D-", "");
-        if (incNum === dispNum) {
-          return { ...inc, status: newStatus };
-        }
-        return inc;
-      })
-    );
+    setDispatchQueue((current) => current.map((item) => item.id === dispatchId ? { ...item, status: newStatus } : item));
+    setIncidents((current) => current.map((inc) => {
+      const incNum = inc.id.replace("RG-", "");
+      const dispNum = dispatchId.replace("D-", "");
+      return incNum === dispNum ? { ...inc, status: newStatus } : inc;
+    }));
     const now = new Date();
-    setActivity((current) => [
-      {
-        time: formatClockTime(now),
-        title: `${dispatchId} status → ${newStatus}`,
-        detail: dispatchQueue.find((d) => d.id === dispatchId)?.area || "",
-        icon: "radio",
-        tone: "blue"
-      },
-      ...current
-    ]);
+    const area = dispatchQueue.find((d) => d.id === dispatchId)?.area || "";
+    const actItem = { time: formatClockTime(now), title: `${dispatchId} → ${newStatus}`, detail: area, icon: "radio", tone: "blue", created_at: now.toISOString() };
+    setActivity((current) => [actItem, ...current]);
+    // Persist to Supabase
+    upsertDispatch({ id: dispatchId, status: newStatus });
+    insertActivity(actItem);
     flashNotice(`${dispatchId} updated to "${newStatus}".`);
   }
 
   function updateDispatchAsset(dispatchId, newAsset) {
-    setDispatchQueue((current) =>
-      current.map((item) =>
-        item.id === dispatchId ? { ...item, asset: newAsset } : item
-      )
-    );
-    flashNotice(`${dispatchId} reassigned to ${newAsset}.`);
+    setDispatchQueue((current) => current.map((item) => item.id === dispatchId ? { ...item, asset: newAsset } : item));
+    upsertDispatch({ id: dispatchId, asset: newAsset });
   }
 
   function openReportModal() {
@@ -858,10 +950,7 @@ function Dashboard() {
       return;
     }
 
-    if (!reportForm.photo) {
-      setReportError("Attach a photo of the emergency to submit the report.");
-      return;
-    }
+    // Photo is optional — helps AI but not required
 
     // ── Step 1: Run AI prank-detection before adding to queue ─────────────
     setAiLoading(true);
@@ -956,7 +1045,12 @@ function Dashboard() {
     setSelectedIncident(id);
     setIncidentFilter("All");
     setIsReportOpen(false);
-    setSubmittedCount((c) => c + 1); // increment live counter
+    setSubmittedCount((c) => c + 1);
+    // Persist to Supabase
+    const ts = now.toISOString();
+    upsertIncident({ ...newIncident, is_submitted: true, created_at: ts });
+    upsertDispatch({ ...newDispatchItem, incident_id: id, created_at: ts });
+    insertActivity({ ...newActivityItem, created_at: ts });
 
     const prankNote = isPotentialPrank ? " — marked for verification (possible prank)" : "";
     flashNotice(`${id} submitted and added to the incident queue${prankNote}.`);
@@ -1174,6 +1268,15 @@ function Dashboard() {
                 <Icon name="plus" size={16} />
                 {t("simulateEmergency")}
               </button>
+              <a
+                href="/report"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="simulate-button public-report-link"
+                style={{ textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 7 }}
+              >
+                🚨 Public report page
+              </a>
             </div>
           </section>
 
@@ -1940,6 +2043,10 @@ function Dashboard() {
             <span>Secure channel / RG-OPS-01</span>
           </footer>
         </div>
+
+        {dbLoading && (
+          <div className="db-loading-bar" title="Syncing with database…" />
+        )}
 
         {notice && (
           <div className="toast" role="status">
