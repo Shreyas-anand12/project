@@ -3225,6 +3225,40 @@ html[data-theme="dark"] .custom-status-option:hover {
   line-height: 1.6;
 }
 .login-note a { color: #3fc6c1; }
+.login-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #607070;
+  font-size: 12px;
+  margin: 4px 0;
+}
+.login-divider::before,
+.login-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: rgba(255,255,255,0.08);
+}
+.login-report-btn {
+  display: block;
+  width: 100%;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1.5px solid rgba(239, 68, 68, 0.4);
+  border-radius: 12px;
+  padding: 14px;
+  font-size: 15px;
+  font-weight: 700;
+  color: #f87171;
+  text-decoration: none;
+  text-align: center;
+  transition: background 0.15s, transform 0.1s;
+  box-sizing: border-box;
+}
+.login-report-btn:hover {
+  background: rgba(239, 68, 68, 0.2);
+  transform: translateY(-1px);
+}
 
 /* ── AI Chat ──────────────────────────────────────────────────────── */
 .ai-chat-fab {

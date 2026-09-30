@@ -65,9 +65,14 @@ export default function Login({ onLogin }) {
         </form>
 
         <p className="login-note">
-          🔒 Restricted access — authorized dispatchers only.<br />
-          Public emergency? <a href="/report" target="_blank">Submit a report here</a>
+          🔒 Restricted access — authorized dispatchers only.
         </p>
+
+        <div className="login-divider">or</div>
+
+        <a href="/report" target="_blank" className="login-report-btn">
+          🚨 Submit a public emergency report
+        </a>
       </div>
     </div>
   );
