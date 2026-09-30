@@ -278,7 +278,7 @@ export default function PublicReport() {
                 📷 Attach a photo
               </button>
             )}
-            <input ref={fileRef} type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={handlePhoto} />
+            <input ref={fileRef} type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={handlePhoto} onClick={e => e.target.value = ""} />
           </div>
 
           {submitError && <div className="pub-error">{submitError}</div>}

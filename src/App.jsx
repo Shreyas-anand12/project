@@ -3,6 +3,8 @@ import { supabase, fetchIncidents, fetchDispatchQueue, fetchActivity, upsertInci
 import MapView from "./MapView";
 import LocationPicker from "./Locationpicker";
 import LanguageSelector from "./LanguageSelector";
+import Login from "./Login";
+import AiChat from "./AiChat";
 import { LanguageProvider, useLanguage } from "./i18n/LanguageContext";
 import "./map.css";
 
@@ -23,60 +25,60 @@ const initialIncidents = [
     id: "RG-1048",
     type: "Structure fire",
     category: "Fire",
-    location: "Westhaven Market",
+    location: "MG Road, Bengaluru",
     detail: "South entrance, smoke visible from roofline",
-    distance: "0.8 mi",
+    distance: "0.8 km",
     severity: "critical",
     status: "Awaiting engine",
     eta: "04:12",
     units: "E-14, T-06",
-    lat: 12.9762,
-    lng: 77.5993,
+    lat: 12.9756,
+    lng: 77.6097,
     icon: "fire"
   },
   {
     id: "RG-1051",
     type: "Cardiac response",
     category: "Medical",
-    location: "Northpoint Apartments",
+    location: "Indiranagar, Bengaluru",
     detail: "Adult patient, third-floor unit",
-    distance: "1.4 mi",
+    distance: "1.4 km",
     severity: "urgent",
     status: "Medic en route",
     eta: "02:18",
     units: "M-07",
-    lat: 12.9850,
-    lng: 77.6050,
+    lat: 12.9784,
+    lng: 77.6408,
     icon: "medical"
   },
   {
     id: "RG-1043",
     type: "Vehicle collision",
     category: "Traffic",
-    location: "Cedar & 8th Avenue",
+    location: "Silk Board Junction, Bengaluru",
     detail: "Two vehicles, possible entrapment",
-    distance: "2.1 mi",
+    distance: "2.1 km",
     severity: "urgent",
     status: "Scene secured",
     eta: "07:46",
     units: "P-22, M-03",
-    lat: 12.9700,
-    lng: 77.6100,
+    lat: 12.9176,
+    lng: 77.6233,
     icon: "car"
   },
   {
     id: "RG-1038",
     type: "Gas odor",
     category: "Hazmat",
-    location: "Edison Row",
+    location: "Whitefield, Bengaluru",
     detail: "Commercial block evacuation in progress",
-    distance: "3.0 mi",
+    distance: "3.0 km",
     severity: "watch",
     status: "Utility notified",
     eta: "11:30",
     units: "H-02",
-    lat: 12.9650,
-    lng: 77.6150,
+    lat: 12.9698,
+    lng: 77.7499,
     icon: "alert"
   }
 ];
@@ -569,7 +571,7 @@ function StatusDropdown({ value, onChange }) {
   );
 }
 
-function Dashboard() {
+function Dashboard({ session, onSignOut }) {
   const { language, hasChosenLanguage, setLanguage, t, languages } = useLanguage();
   const [isLanguageModalOpen, setIsLanguageModalOpen] = useState(!hasChosenLanguage);
   const [activeNav, setActiveNav] = useState("navCommandCenter");
@@ -609,19 +611,33 @@ function Dashboard() {
   const [profile, setProfile] = useState(() => {
     try {
       const saved = localStorage.getItem("rg_profile");
-      return saved ? JSON.parse(saved) : {
-        name: "Alex Monroe", role: "Shift commander",
-        email: "a.monroe@rescuegrid.ops", phone: "+1 555-0192",
-        badge: "RG-4421", station: "Station 14 — Downtown",
+      const defaults = {
+        name: session?.user?.email?.split("@")[0] || "Dispatcher",
+        role: "Shift commander",
+        email: session?.user?.email || "dispatcher@rescuegrid.ops",
+        phone: "+1 555-0192", badge: "RG-4421",
+        station: "Station 14 — Downtown",
         notifications: { email: true, sms: true, push: false }, theme: "dark"
       };
+      return saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
     } catch {
-      return { name: "Alex Monroe", role: "Shift commander",
-        email: "a.monroe@rescuegrid.ops", phone: "+1 555-0192",
-        badge: "RG-4421", station: "Station 14 — Downtown",
-        notifications: { email: true, sms: true, push: false }, theme: "dark" };
+      return {
+        name: session?.user?.email?.split("@")[0] || "Dispatcher",
+        role: "Shift commander",
+        email: session?.user?.email || "dispatcher@rescuegrid.ops",
+        phone: "+1 555-0192", badge: "RG-4421",
+        station: "Station 14 — Downtown",
+        notifications: { email: true, sms: true, push: false }, theme: "dark"
+      };
     }
   });
+
+  async function handleSignOut() {
+    await supabase.auth.signOut();
+    localStorage.removeItem("rg_profile");
+    localStorage.removeItem("rg_acknowledged");
+    if (onSignOut) onSignOut();
+  }
   const noticeTimer = useRef(null);
   const nextReportNumber = useRef(1052);
 
@@ -1144,7 +1160,7 @@ function Dashboard() {
                     <Icon name="users" size={15} /> Hand off shift
                   </button>
                   <div className="operator-menu-divider" />
-                  <button className="danger" onClick={() => { flashNotice("Signed out. Redirecting…"); setIsOperatorOpen(false); }}>
+                  <button className="danger" onClick={() => { setIsOperatorOpen(false); handleSignOut(); }}>
                     <Icon name="arrow-right" size={15} /> Sign out
                   </button>
                 </div>
@@ -2030,7 +2046,7 @@ function Dashboard() {
                     <h3>Account actions</h3>
                   </div>
                   <div className="settings-danger-actions">
-                    <button className="secondary-button" onClick={() => flashNotice("Signed out. Redirecting…")}>Sign out</button>
+                    <button className="secondary-button" onClick={handleSignOut}>Sign out</button>
                     <button className="secondary-button danger-btn" onClick={() => flashNotice("Contact your system administrator to deactivate.")}>Deactivate account</button>
                   </div>
                 </TiltCard>
@@ -2069,6 +2085,13 @@ function Dashboard() {
             }}
           />
         )}
+
+        {/* AI Chat assistant — always visible */}
+        <AiChat
+          incidents={incidents}
+          dispatchQueue={dispatchQueue}
+          activity={activity}
+        />
 
         {/* ── Broadcast modal ── */}
         {isBroadcastOpen && (
@@ -2255,9 +2278,33 @@ function Dashboard() {
 }
 
 export default function App() {
+  const [session, setSession] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+
+  useEffect(() => {
+    // Check existing session
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setAuthLoading(false);
+    });
+    // Listen for auth changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+    });
+    return () => subscription.unsubscribe();
+  }, []);
+
+  if (authLoading) return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: "#0d1f21", color: "#3fc6c1", fontSize: 16 }}>
+      Loading RescueGrid…
+    </div>
+  );
+
+  if (!session) return <Login onLogin={setSession} />;
+
   return (
     <LanguageProvider>
-      <Dashboard />
+      <Dashboard session={session} onSignOut={() => setSession(null)} />
     </LanguageProvider>
   );
 }
