@@ -40,30 +40,49 @@ Dispatch queue: ${dispatchQueue?.slice(0,5).map(d => `${d.id}: ${d.call} → ${d
 Recent activity: ${activity?.slice(0,3).map(a => a.title).join("; ")}
 `;
 
-    const conversationHistory = messages.map(m => ({
-      role: m.role === "assistant" ? "model" : "user",
-      parts: [{ text: m.text }]
-    }));
+    // Only include actual back-and-forth (skip the initial assistant greeting)
+    // Gemini requires alternating user/model roles, starting with user
+    const priorExchanges = [];
+    const humanMessages = messages.filter(m => m.role === "user");
+    const aiMessages = messages.filter(m => m.role === "assistant");
+    // Interleave: user first, then model
+    for (let i = 0; i < humanMessages.length; i++) {
+      priorExchanges.push({ role: "user",  parts: [{ text: humanMessages[i].text }] });
+      if (aiMessages[i + 1]) { // skip the greeting (index 0)
+        priorExchanges.push({ role: "model", parts: [{ text: aiMessages[i + 1].text }] });
+      }
+    }
 
-    conversationHistory.push({
-      role: "user",
-      parts: [{ text: `${SYSTEM_PROMPT}\n\nCurrent dashboard context:\n${context}\n\nUser question: ${text}` }]
-    });
+    // Final user message includes system prompt + context
+    const contents = [
+      {
+        role: "user",
+        parts: [{ text: `${SYSTEM_PROMPT}\n\nDashboard context:\n${context}\n\nQuestion: ${text}` }]
+      }
+    ];
 
+    // If there were prior exchanges, prepend them (skip the very first since it's now our new message)
+    // For simplicity just send the enriched single message — keeps it clean
     try {
       const res = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ contents: conversationHistory })
+          body: JSON.stringify({ contents })
         }
       );
       const data = await res.json();
-      const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text || "Sorry, I couldn't process that. Try again.";
-      setMessages(m => [...m, { role: "assistant", text: reply }]);
-    } catch {
-      setMessages(m => [...m, { role: "assistant", text: "Connection error. Check your API key." }]);
+      if (data.error) {
+        console.error("Gemini error:", data.error);
+        setMessages(m => [...m, { role: "assistant", text: `API error: ${data.error.message}` }]);
+      } else {
+        const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text || "No response from AI.";
+        setMessages(m => [...m, { role: "assistant", text: reply }]);
+      }
+    } catch (err) {
+      console.error("Fetch error:", err);
+      setMessages(m => [...m, { role: "assistant", text: "Connection error — check console for details." }]);
     }
     setLoading(false);
   }
