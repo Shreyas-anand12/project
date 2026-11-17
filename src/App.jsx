@@ -4,7 +4,7 @@ import MapView from "./MapView";
 import LocationPicker from "./Locationpicker";
 import LanguageSelector from "./LanguageSelector";
 import Login from "./Login";
-import AiChat from "./AiChat";
+import { previewAnalysis } from "./ai.js";
 import { LanguageProvider, useLanguage } from "./i18n/LanguageContext";
 import "./map.css";
 
@@ -188,70 +188,11 @@ const initialActivity = [
   }
 ];
 
-// ─── Gemini AI prank-detection ──────────────────────────────────────────────
-const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || "";
-
+// ─── AI prank-detection ─────────────────────────────────────────────────────
+// Runs on the server (netlify/functions/analyze.mjs) so the Gemini key never
+// reaches the browser. Returns verdict "real" | "prank" | "unverified".
 async function analyzeReportWithGemini({ description, location, peopleAffected, photoBase64 }) {
-  if (!GEMINI_API_KEY) {
-    // No key configured — skip AI check and treat every report as real.
-    return { verdict: "real", confidence: null, reason: "AI check skipped (no API key configured)." };
-  }
-
-  const parts = [];
-
-  if (photoBase64) {
-    // Strip the data-URL prefix so Gemini gets raw base64.
-    const base64Data = photoBase64.split(",")[1] || photoBase64;
-    parts.push({
-      inline_data: { mime_type: "image/jpeg", data: base64Data }
-    });
-  }
-
-  parts.push({
-    text: `You are a 911 dispatch AI assistant. Analyze this emergency report and determine whether it is a REAL emergency or a PRANK/false alarm.
-
-Description: "${description}"
-Location: "${location}"
-People affected: ${peopleAffected}
-${photoBase64 ? "A photo was attached (shown above)." : "No photo attached."}
-
-Respond ONLY with a JSON object in this exact format (no markdown, no extra text):
-{
-  "verdict": "real" or "prank",
-  "confidence": 0-100,
-  "reason": "one sentence explanation"
-}
-
-Indicators of a prank: vague description, no clear location, suspiciously round numbers, joke-like language, photo doesn't match description, or description uses humor/slang.
-Indicators of a real emergency: specific location details, coherent description of hazard or injury, distressed tone, consistent photo evidence.`
-  });
-
-  try {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ contents: [{ parts }] })
-      }
-    );
-
-    if (!response.ok) {
-      throw new Error(`Gemini API error: ${response.status}`);
-    }
-
-    const data = await response.json();
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-    const parsed = JSON.parse(text.trim());
-    return {
-      verdict: parsed.verdict === "prank" ? "prank" : "real",
-      confidence: parsed.confidence ?? null,
-      reason: parsed.reason ?? ""
-    };
-  } catch (err) {
-    console.warn("Gemini analysis failed:", err);
-    return { verdict: "real", confidence: null, reason: "AI check failed — treating as real." };
-  }
+  return previewAnalysis({ description, location, peopleAffected, photo: photoBase64 });
 }
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -281,6 +222,45 @@ function severityFromPeopleAffected(count) {
   if (count >= 5) return "critical";
   if (count >= 1) return "urgent";
   return "watch";
+}
+
+// ─── Urgency ordering for the officer's dashboard ──────────────────────────
+const SEVERITY_RANK = { critical: 0, urgent: 1, watch: 2 };
+const CATEGORY_ICONS = {
+  Fire: "fire", Medical: "medical", Traffic: "car", Natural: "cloud",
+  Hazmat: "alert", Security: "alert", General: "alert"
+};
+
+// The more urgent of two severities (AI may raise urgency, never lower it).
+function moreUrgent(a, b) {
+  if (!(b in SEVERITY_RANK)) return a;
+  if (!(a in SEVERITY_RANK)) return b;
+  return SEVERITY_RANK[a] <= SEVERITY_RANK[b] ? a : b;
+}
+
+// Most urgent first; reports the AI flagged as possible pranks go below real
+// ones of the same severity; newest first within a group.
+function byUrgency(a, b) {
+  const rank = (i) => (SEVERITY_RANK[i.severity] ?? 3) * 2 + (i.isPotentialPrank ? 1 : 0);
+  const diff = rank(a) - rank(b);
+  if (diff !== 0) return diff;
+  return String(b.created_at || "").localeCompare(String(a.created_at || ""));
+}
+
+// Database rows use snake_case (is_potential_prank, photo_url, ai_reason…)
+// while the dashboard reads camelCase. Fill in both so badges, photos and the
+// AI triage show for real reports, not just simulated ones. The database
+// value wins, so a realtime update (e.g. the AI's verdict) replaces stale data.
+function normalizeIncident(row) {
+  if (!row) return row;
+  return {
+    ...row,
+    isPotentialPrank: row.is_potential_prank ?? row.isPotentialPrank ?? false,
+    aiVerdict: row.ai_verdict ?? row.aiVerdict ?? null,
+    aiConfidence: row.ai_confidence ?? row.aiConfidence ?? null,
+    aiReason: row.ai_reason ?? row.aiReason ?? "",
+    photoUrl: row.photo_url ?? row.photoUrl ?? null
+  };
 }
 
 function formatClockTime(date) {
@@ -665,9 +645,10 @@ function Dashboard({ session, onSignOut }) {
         if (inc && inc.length > 0) {
           // Merge: Supabase rows on top, keep seeded data too (by id dedup)
           const supaIds = new Set(inc.map(i => i.id));
-          const merged = [...inc, ...initialIncidents.filter(i => !supaIds.has(i.id))];
+          const merged = [...inc.map(normalizeIncident), ...initialIncidents.filter(i => !supaIds.has(i.id))];
           setIncidents(merged);
-          setSelectedIncident(merged[0]?.id || "RG-1048");
+          // Open the most urgent report first.
+          setSelectedIncident([...merged].sort(byUrgency)[0]?.id || "RG-1048");
         }
         if (disp && disp.length > 0) {
           const supaIds = new Set(disp.map(d => d.id));
@@ -694,7 +675,7 @@ function Dashboard({ session, onSignOut }) {
         if (payload.eventType === "INSERT") {
           setIncidents(curr => {
             if (curr.find(i => i.id === payload.new.id)) return curr;
-            return [payload.new, ...curr];
+            return [normalizeIncident(payload.new), ...curr];
           });
           setSubmittedCount(c => c + 1);
           // Add notification
@@ -706,7 +687,7 @@ function Dashboard({ session, onSignOut }) {
           }, ...ns]);
         }
         if (payload.eventType === "UPDATE") {
-          setIncidents(curr => curr.map(i => i.id === payload.new.id ? { ...i, ...payload.new } : i));
+          setIncidents(curr => curr.map(i => i.id === payload.new.id ? normalizeIncident({ ...i, ...payload.new }) : i));
         }
       })
       .subscribe();
@@ -749,14 +730,16 @@ function Dashboard({ session, onSignOut }) {
     incidents[0];
 
   const visibleIncidents = useMemo(() => {
-    if (incidentFilter === "All") return incidents;
+    let list = incidents;
     if (incidentFilter === "Critical") {
-      return incidents.filter((incident) => incident.severity === "critical");
+      list = incidents.filter((incident) => incident.severity === "critical");
+    } else if (incidentFilter === "Flagged") {
+      list = incidents.filter((incident) => incident.isPotentialPrank);
+    } else if (incidentFilter !== "All") {
+      list = incidents.filter((incident) => incident.category === incidentFilter);
     }
-
-    return incidents.filter(
-      (incident) => incident.category === incidentFilter
-    );
+    // AI-classified urgency decides the order: most urgent at the top.
+    return [...list].sort(byUrgency);
   }, [incidents, incidentFilter]);
 
   const visibleQueue = useMemo(() => {
@@ -1003,8 +986,12 @@ function Dashboard({ session, onSignOut }) {
 
     const id = `RG-${number}`;
     const dispatchId = `D-${number}`;
-    const { icon, category, type } = classifyReport(description);
-    const severity = severityFromPeopleAffected(peopleAffected);
+    // Keyword guess first; the AI's classification replaces it when available.
+    const guess = classifyReport(description);
+    const category = analysis.category || guess.category;
+    const icon = analysis.category ? (CATEGORY_ICONS[analysis.category] || "alert") : guess.icon;
+    const type = analysis.type || guess.type;
+    const severity = moreUrgent(severityFromPeopleAffected(peopleAffected), analysis.severity);
     const now = new Date();
 
     const hasPreciseLocation = reportForm.lat != null && reportForm.lng != null;
@@ -1396,7 +1383,7 @@ function Dashboard({ session, onSignOut }) {
               </div>
 
               <div className="filter-row">
-                {["All", "Critical", "Medical", "Fire"].map((filter) => (
+                {["All", "Critical", "Medical", "Fire", "Traffic", "Flagged"].map((filter) => (
                   <button
                     key={filter}
                     className={`filter-button ${
@@ -1465,6 +1452,38 @@ function Dashboard({ session, onSignOut }) {
                 </div>
 
                 <p>{activeIncident.detail}</p>
+
+                {activeIncident.aiVerdict && (
+                  <div
+                    className={`ai-check-status ${
+                      activeIncident.aiVerdict === "pending"
+                        ? "is-loading"
+                        : activeIncident.aiVerdict === "real"
+                        ? "is-real"
+                        : "is-prank"
+                    }`}
+                  >
+                    <span className="ai-verdict-icon">
+                      {activeIncident.aiVerdict === "pending" ? "⏳"
+                        : activeIncident.aiVerdict === "prank" ? "⚠️"
+                        : activeIncident.aiVerdict === "unverified" ? "❔" : "🤖"}
+                    </span>
+                    <span>
+                      <strong>
+                        {activeIncident.aiVerdict === "pending"
+                          ? "AI triage in progress…"
+                          : activeIncident.aiVerdict === "prank"
+                          ? `AI: possible prank (${activeIncident.aiConfidence ?? "?"}% confidence)`
+                          : activeIncident.aiVerdict === "unverified"
+                          ? "AI check unavailable — review manually"
+                          : `AI triage: ${activeIncident.severity} · ${activeIncident.category}`}
+                      </strong>
+                      {activeIncident.aiReason && activeIncident.aiVerdict !== "pending" && (
+                        <small style={{ display: "block", marginTop: 2 }}>{activeIncident.aiReason}</small>
+                      )}
+                    </span>
+                  </div>
+                )}
 
                 {activeIncident.photoUrl && (
                   <div className="incident-photo">
@@ -1708,7 +1727,7 @@ function Dashboard({ session, onSignOut }) {
                     <span className="count-badge">{incidents.length}</span>
                   </div>
                   <div className="filter-row">
-                    {["All", "Critical", "Medical", "Fire"].map((filter) => (
+                    {["All", "Critical", "Medical", "Fire", "Traffic", "Flagged"].map((filter) => (
                       <button
                         key={filter}
                         className={`filter-button ${incidentFilter === filter ? "is-active" : ""}`}
@@ -2086,13 +2105,6 @@ function Dashboard({ session, onSignOut }) {
           />
         )}
 
-        {/* AI Chat assistant — always visible */}
-        <AiChat
-          incidents={incidents}
-          dispatchQueue={dispatchQueue}
-          activity={activity}
-        />
-
         {/* ── Broadcast modal ── */}
         {isBroadcastOpen && (
           <div className="modal-overlay" role="presentation" onClick={() => setIsBroadcastOpen(false)}>
@@ -2234,15 +2246,17 @@ function Dashboard({ session, onSignOut }) {
                 )}
 
                 {!aiLoading && aiAnalysis && (
-                  <div className={`ai-check-status ${aiAnalysis.verdict === "prank" ? "is-prank" : "is-real"}`}>
+                  <div className={`ai-check-status ${aiAnalysis.verdict === "real" ? "is-real" : "is-prank"}`}>
                     <span className="ai-verdict-icon">
-                      {aiAnalysis.verdict === "prank" ? "⚠️" : "✅"}
+                      {aiAnalysis.verdict === "prank" ? "⚠️" : aiAnalysis.verdict === "unverified" ? "❔" : "✅"}
                     </span>
                     <span>
                       <strong>
                         {aiAnalysis.verdict === "prank"
                           ? `AI: Possible prank (${aiAnalysis.confidence ?? "?"}% confidence)`
-                          : `AI: Looks like a real emergency${aiAnalysis.confidence != null ? ` (${aiAnalysis.confidence}% confidence)` : ""}`}
+                          : aiAnalysis.verdict === "unverified"
+                            ? "AI check unavailable — review manually"
+                            : `AI: Looks like a real emergency${aiAnalysis.confidence != null ? ` (${aiAnalysis.confidence}% confidence)` : ""}`}
                       </strong>
                       {aiAnalysis.reason && (
                         <small style={{ display: "block", marginTop: 2 }}>{aiAnalysis.reason}</small>
